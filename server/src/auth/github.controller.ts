@@ -23,7 +23,8 @@ export class GithubController {
   @UseGuards(AuthGuard('jwt'))
   getAuthUrl(@Req() req) {
     const clientId = process.env.GITHUB_CLIENT_ID;
-    if (!clientId) throw new BadRequestException('GITHUB_CLIENT_ID is not configured');
+    if (!clientId)
+      throw new BadRequestException('GITHUB_CLIENT_ID is not configured');
     const redirect = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/github-callback`;
     const state = req.user?.id || '';
     const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirect)}&scope=repo&state=${state}`;
@@ -38,13 +39,15 @@ export class GithubController {
     const clientId = process.env.GITHUB_CLIENT_ID;
     const clientSecret = process.env.GITHUB_CLIENT_SECRET;
     if (!clientId || !clientSecret) {
-      throw new BadRequestException('GitHub client credentials are not configured');
+      throw new BadRequestException(
+        'GitHub client credentials are not configured',
+      );
     }
     const redirect = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/github-callback`;
 
     const accessToken = await this.githubService.exchangeCodeForToken(
-      clientId as string,
-      clientSecret as string,
+      clientId,
+      clientSecret,
       code,
       redirect,
     );

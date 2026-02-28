@@ -222,6 +222,7 @@ export class DeploymentsService {
     userId?: string,
   ): Promise<void> {
     let logs = 'Initializing deployment sequence...\n';
+    const serverIp = server.ip as string ;
     const updateLogs = async (chunk: string) => {
       logs += chunk + '\n';
       await this.prisma.deployment.update({
@@ -237,9 +238,7 @@ export class DeploymentsService {
       let deployScript = '';
 
       // Prepare repository URL with optional GitHub OAuth token injection
-      const rawRepoUrl = (dto.repositoryUrl ||
-        project?.repositoryUrl ||
-        '') as string;
+      const rawRepoUrl = dto.repositoryUrl || project?.repositoryUrl || '';
       let repoUrlForClone = rawRepoUrl;
       if (rawRepoUrl && userId) {
         try {
@@ -299,6 +298,7 @@ export class DeploymentsService {
           domain,
           isCustomDomain,
           appDir,
+          serverIp,
         );
       }
 
@@ -447,35 +447,58 @@ echo "Deployment successful!"
     domain: string,
     isCustomDomain: boolean,
     appDir: string,
+    serverIp: string,
   ): string {
-    const installCmd = (template as any)?.installCmd || 'npm install';
-    const buildCmd = (template as any)?.buildCmd || '';
-    const startCmd = (template as any)?.startCmd || 'npm start';
-    const port = (template as any)?.defaultPort || 3000;
-    const pm2Name = `vpshub-${deploymentId.slice(0, 8)}`;
-
     const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const pm2Name = `vpshub-${sanitized}-${deploymentId.slice(0, 6)}`;
+
+    const port = 3000 + (parseInt(deploymentId.slice(0, 4), 16) % 1000);
+
     return `
-echo "[1/5] Cloning repository..."
+set -e
+
+echo "[1/6] Cloning repository..."
 sudo mkdir -p ${appDir}
 sudo rm -rf ${appDir}/* 2>/dev/null || true
 sudo git clone ${repositoryUrl} ${appDir} || { echo "Git clone failed"; exit 1; }
 
 cd ${appDir}
-echo "[2/5] Preparing environment..."
-sudo ${installCmd} || { echo "Install failed"; exit 1; }
-${buildCmd ? `sudo ${buildCmd} || { echo "Build failed"; exit 1; }` : ''}
 
-echo "[3/5] Starting application with PM2..."
+echo "[2/6] Installing dependencies..."
+sudo npm install --legacy-peer-deps || { echo "Install failed"; exit 1; }
+
+echo "[3/6] Building application..."
+if [ -f "package.json" ] && grep -q "\"build\":" package.json; then
+  sudo npm run build || { echo "Build failed"; exit 1; }
+else
+  echo "No build script found. Skipping build."
+fi
+
+echo "[4/6] Starting application with PM2 on port ${port}..."
 sudo pm2 delete ${pm2Name} 2>/dev/null || true
-# Pass PORT env var and start
-sudo PORT=${port} pm2 start "${startCmd}" --name ${pm2Name} --restart-delay 3000 || { echo "PM2 start failed"; exit 1; }
+
+if [ -f "node_modules/.bin/next" ]; then
+  sudo pm2 start node_modules/.bin/next --name ${pm2Name} -- start -p ${port}
+else
+  sudo PORT=${port} pm2 start npm --name ${pm2Name} -- start
+fi
+
 sudo pm2 save
 
-echo "[4/5] Configuring Nginx reverse proxy for ${domain}..."
- # remove stale nginx configs for same project (keep current)
-sudo ls /etc/nginx/sites-available 2>/dev/null | grep "vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}" | grep -v "vpshub-${deploymentId}" | xargs -r sudo rm -f || true
-sudo ls /etc/nginx/sites-enabled 2>/dev/null | grep "vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}" | grep -v "vpshub-${deploymentId}" | xargs -r sudo rm -f || true
+sleep 5
+
+if ! sudo ss -tuln | grep -q ":${port}"; then
+  echo "Application failed to bind to port ${port}"
+  sudo pm2 logs ${pm2Name} --lines 20
+  exit 1
+fi
+
+echo "[5/6] Cleaning old nginx configs..."
+sudo grep -rl "server_name ${serverIp}.nip.io" /etc/nginx/sites-available 2>/dev/null | xargs -r sudo rm -f || true
+sudo grep -rl "server_name ${serverIp}.nip.io" /etc/nginx/sites-enabled 2>/dev/null | xargs -r sudo rm -f || true
+
+echo "[6/6] Configuring Nginx reverse proxy for ${domain}..."
+
 sudo cat <<EOF > /etc/nginx/sites-available/vpshub-${sanitized}-${deploymentId}
 server {
     listen 80;
@@ -483,20 +506,27 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \\$http_upgrade;
+        proxy_set_header Connection 'upgrade';
         proxy_set_header Host \\$host;
+        proxy_cache_bypass \\$http_upgrade;
         proxy_set_header X-Real-IP \\$remote_addr;
         proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \\$scheme;
     }
 }
 EOF
+
 sudo ln -sf /etc/nginx/sites-available/vpshub-${sanitized}-${deploymentId} /etc/nginx/sites-enabled/
-# Ensure server_names_hash_bucket_size is large enough to avoid "could not build server_names_hash" errors
+
 sudo mkdir -p /etc/nginx/conf.d
 echo 'server_names_hash_bucket_size 128;' | sudo tee /etc/nginx/conf.d/vpshub_server_names.conf >/dev/null || true
-sudo nginx -t && sudo systemctl reload nginx || { echo "Nginx config failed"; exit 1; }
 
-${this.generateSslScript(domain, isCustomDomain, 5)}
+sudo nginx -t || { echo "Nginx config test failed"; exit 1; }
+sudo systemctl reload nginx
+
+${this.generateSslScript(domain, isCustomDomain, 6)}
 
 echo "Deployment successful!"
 `;
