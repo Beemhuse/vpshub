@@ -1,0 +1,111 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  password      String?
+  name          String?
+  avatar        String?
+  googleId      String?   @unique
+  githubAccessToken String?
+  role          String    @default("USER")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  servers       Server[]
+  projects      Project[]
+  activities    Activity[]
+}
+
+model Server {
+  id          String       @id @default(uuid())
+  name        String
+  ip          String?
+  os          String
+  status      String       @default("offline") // online, offline, warning
+  cpu         Int          @default(1)
+  memory      Int          @default(1024)
+  disk        Int          @default(20)
+  region      String
+  userId      String
+  user        User         @relation(fields: [userId], references: [id])
+  projects    Project[]
+  deployments Deployment[]
+  activities  Activity[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  sshUser     String?
+  sshPassword String?
+  sshKey      String?
+  sshPort     Int          @default(22)
+  connectionStatus String  @default("PENDING") // PENDING, CONNECTING, CONNECTED, FAILED
+}
+
+model Project {
+  id            String   @id @default(uuid())
+  name          String
+  description   String?
+  domain        String?
+  type          String   @default("static") // static, docker
+  repositoryUrl String?
+  dockerImage   String?
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  serverId      String
+  server        Server   @relation(fields: [serverId], references: [id])
+  deployments   Deployment[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Deployment {
+  id            String   @id @default(uuid())
+  serverId      String
+  server        Server   @relation(fields: [serverId], references: [id])
+  projectId     String?
+  project       Project? @relation(fields: [projectId], references: [id])
+  domain        String?
+  templateId    String?
+  repositoryUrl String?
+  status        String   @default("pending") // pending, in-progress, completed, failed
+  logs          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Template {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  type        String   @default("STATIC") // STATIC, NODE, DOCKER
+  image       String?  // For DOCKER type
+  buildCmd    String?
+  installCmd  String?
+  startCmd    String?
+  outputDir   String?  // For STATIC type (e.g., "dist", "build")
+  defaultPort Int?     // For NODE/DOCKER
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt @default(now())
+}
+
+model Activity {
+  id        String   @id @default(uuid())
+  type      String   // login, server_create, server_start, etc.
+  message   String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  serverId  String?
+  server    Server?  @relation(fields: [serverId], references: [id])
+  createdAt DateTime @default(now())
+}
