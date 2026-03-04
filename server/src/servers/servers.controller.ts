@@ -132,6 +132,26 @@ export class ServersController {
     );
   }
 
+  @Get(':id/pm2')
+  getPm2Processes(@Req() req: any, @Param('id') id: string) {
+    return this.serversService.getPm2Processes(req.user.id, id);
+  }
+
+  @Post(':id/pm2/:nameOrId/:action')
+  handlePm2Action(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Param('nameOrId') nameOrId: string,
+    @Param('action') action: string,
+  ) {
+    return this.serversService.handlePm2Action(
+      req.user.id,
+      id,
+      nameOrId,
+      action,
+    );
+  }
+
   @Post('register-agent')
   @Public()
   @ApiOperation({ summary: 'Register a server agent (internal)' })

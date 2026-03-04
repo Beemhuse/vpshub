@@ -16,6 +16,7 @@ import {
   RotateCcw,
   MoreHorizontal,
   Send,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -33,6 +34,7 @@ import {
 import { useServerStats, useTerminalCommand } from "../hooks/useApi";
 
 import { DockerManagement } from "../components/DockerManagement";
+import { PM2Management } from "../components/PM2Management";
 import { FileManager } from "../components/FileManager";
 
 interface ServerDetailProps {
@@ -191,6 +193,13 @@ export function ServerDetail({ server }: ServerDetailProps) {
           >
             <Database className="w-4 h-4 mr-2" />
             Docker
+          </TabsTrigger>
+          <TabsTrigger
+            value="pm2"
+            className="data-[state=active]:bg-violet/20 data-[state=active]:text-violet"
+          >
+            <Zap className="w-4 h-4 mr-2" />
+            PM2
           </TabsTrigger>
           <TabsTrigger
             value="metrics"
@@ -443,6 +452,10 @@ export function ServerDetail({ server }: ServerDetailProps) {
         {/* Docker Tab */}
         <TabsContent value="docker" className="mt-6">
           <DockerManagement serverId={server.id} />
+        </TabsContent>
+
+        <TabsContent value="pm2" className="mt-6">
+          <PM2Management serverId={server.id} />
         </TabsContent>
 
         {/* Metrics Tab */}

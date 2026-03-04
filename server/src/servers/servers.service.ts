@@ -509,7 +509,55 @@ EOF
     }
   }
 
-  public executeSshCommand(server: any, command: string): Promise<string> {
+  public async uploadFileContent(
+    server: any,
+    remotePath: string,
+    content: string,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const conn = new Client();
+      conn
+        .on('ready', () => {
+          conn.sftp((err, sftp) => {
+            if (err) {
+              conn.end();
+              return reject(err);
+            }
+            const stream = sftp.createWriteStream(remotePath);
+            stream.on('close', () => {
+              conn.end();
+              resolve();
+            });
+            stream.on('error', (err) => {
+              conn.end();
+              reject(err);
+            });
+            stream.write(content);
+            stream.end();
+          });
+        })
+        .on('error', (err) => {
+          reject(err);
+        });
+      const config: any = {
+        host: server.ip.trim(),
+        port: server.sshPort || 22,
+        username: server.sshUser,
+        readyTimeout: 20000,
+      };
+
+      if (server.sshPassword) config.password = server.sshPassword;
+      if (server.sshKey) config.privateKey = server.sshKey;
+
+      conn.connect(config);
+    });
+  }
+
+  public executeSshCommand(
+    server: any,
+    command: string,
+    onData?: (chunk: string) => void,
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       const conn = new Client();
       let output = '';
@@ -522,17 +570,31 @@ EOF
               return reject(err);
             }
 
-            stream
-              .on('close', (code, signal) => {
-                conn.end();
-                resolve(output);
-              })
-              .on('data', (data) => {
-                output += data.toString();
-              })
-              .stderr.on('data', (data) => {
-                output += data.toString();
-              });
+            stream.on('data', (data) => {
+              const chunk = data.toString();
+              output += chunk;
+
+              if (onData) onData(chunk);
+            });
+
+            stream.stderr.on('data', (data) => {
+              const chunk = data.toString();
+              output += chunk;
+
+              if (onData) onData(chunk);
+            });
+
+            stream.on('close', (code) => {
+              conn.end();
+              if (code !== 0) {
+                const error = new Error(
+                  `Command failed with exit code ${code}`,
+                );
+                (error as any).output = output;
+                return reject(error);
+              }
+              resolve(output);
+            });
           });
         })
         .on('error', (err) => {
@@ -551,5 +613,101 @@ EOF
 
       conn.connect(config);
     });
+  }
+
+  public async executeSshScript(
+    server: any,
+    scriptContent: string,
+    onData?: (chunk: string) => void,
+  ): Promise<string> {
+    const timestamp = Date.now();
+    const remotePath = `/tmp/vpshub-deploy-${timestamp}.sh`;
+
+    try {
+      if (onData) onData(`Uploading deployment script to ${remotePath}...\n`);
+      await this.uploadFileContent(server, remotePath, scriptContent);
+
+      if (onData) onData(`Setting execution permissions...\n`);
+      await this.executeSshCommand(server, `chmod +x ${remotePath}`);
+
+      if (onData) onData(`Executing script...\n`);
+      const output = await this.executeSshCommand(server, remotePath, onData);
+
+      // Cleanup
+      await this.executeSshCommand(server, `rm -f ${remotePath}`);
+
+      return output;
+    } catch (error) {
+      // Attempt cleanup even on failure
+      try {
+        await this.executeSshCommand(server, `rm -f ${remotePath}`);
+      } catch (e) {
+        // ignore cleanup error
+      }
+      throw error;
+    }
+  }
+
+  async getPm2Processes(userId: string, serverId: string) {
+    const server = await this.findOne(userId, serverId);
+
+    if (server.connectionStatus !== 'CONNECTED') {
+      throw new BadRequestException('Server is not connected yet');
+    }
+
+    const command = 'pm2 jlist';
+    try {
+      const output = await this.executeSshCommand(server, command);
+      if (!output.trim()) return [];
+
+      try {
+        return JSON.parse(output);
+      } catch (e) {
+        // PM2 might not be installed or output might be malformed
+        console.error('Failed to parse PM2 output:', output);
+        return [];
+      }
+    } catch (error) {
+      console.error('Failed to get PM2 processes:', error);
+      return [];
+    }
+  }
+
+  async handlePm2Action(
+    userId: string,
+    serverId: string,
+    nameOrId: string,
+    action: string,
+  ) {
+    const server = await this.findOne(userId, serverId);
+
+    if (server.connectionStatus !== 'CONNECTED') {
+      throw new BadRequestException('Server is not connected yet');
+    }
+
+    const validActions = ['start', 'stop', 'restart', 'delete'];
+    if (!validActions.includes(action)) {
+      throw new BadRequestException('Invalid PM2 action');
+    }
+
+    const command = `pm2 ${action} ${nameOrId}`;
+    try {
+      const output = await this.executeSshCommand(server, command);
+
+      await this.prisma.activity.create({
+        data: {
+          type: `pm2_${action}`,
+          message: `PM2 ${action} requested for process ${nameOrId} on ${server.name}`,
+          userId,
+          serverId: server.id,
+        },
+      });
+
+      return { output };
+    } catch (error) {
+      throw new BadRequestException(
+        `Failed to ${action} PM2 process: ${error.message}`,
+      );
+    }
   }
 }

@@ -49,6 +49,7 @@ model Server {
   sshPassword String?
   sshKey      String?
   sshPort     Int          @default(22)
+  domain      String?
   connectionStatus String  @default("PENDING") // PENDING, CONNECTING, CONNECTED, FAILED
 }
 
@@ -65,6 +66,7 @@ model Project {
   serverId      String
   server        Server   @relation(fields: [serverId], references: [id])
   deployments   Deployment[]
+  env           Json?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
@@ -78,6 +80,7 @@ model Deployment {
   domain        String?
   templateId    String?
   repositoryUrl String?
+  env           Json?
   status        String   @default("pending") // pending, in-progress, completed, failed
   logs          String?
   createdAt     DateTime @default(now())

@@ -398,6 +398,48 @@ export const useDocker = (serverId: string) => {
   };
 };
 
+export const usePm2 = (serverId: string) => {
+  const queryClient = useQueryClient();
+
+  const pm2Query = useQuery({
+    queryKey: ["servers", serverId, "pm2"],
+    queryFn: async () => {
+      const { data } = await api.get(`/servers/${serverId}/pm2`);
+      return data;
+    },
+    enabled: !!serverId,
+    refetchInterval: 10000, // Poll every 10 seconds
+  });
+
+  const actionMutation = useMutation({
+    mutationFn: async ({
+      nameOrId,
+      action,
+    }: {
+      nameOrId: string | number;
+      action: string;
+    }) => {
+      const { data } = await api.post(
+        `/servers/${serverId}/pm2/${nameOrId}/${action}`,
+      );
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["servers", serverId, "pm2"],
+      });
+      queryClient.invalidateQueries({ queryKey: ["activities"] });
+    },
+  });
+
+  return {
+    processes: pm2Query.data,
+    isLoading: pm2Query.isLoading,
+    performAction: actionMutation.mutateAsync,
+    isPerformingAction: actionMutation.isPending,
+  };
+};
+
 export const useFiles = (serverId: string) => {
   const queryClient = useQueryClient();
 
