@@ -19,7 +19,7 @@ import {
   ServerStatsDto,
   TerminalCommandDto,
 } from './dto/server.dto';
-import { AuthGuard } from '@nestjs/passport';
+// import { AuthGuard } from '@nestjs/passport';
 import {
   ApiTags,
   ApiOperation,

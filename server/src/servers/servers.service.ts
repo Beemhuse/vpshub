@@ -200,15 +200,14 @@ export class ServersService {
   }
 
   private getBootstrapCommand(serverId: string) {
-    const apiUrl = process.env.API_URL || 'http://localhost:3000';
-
+    const apiUrl = 'https://8898-105-113-10-15.ngrok-free.app';
+    console.log(`Using API URL: ${apiUrl}`);
     return `#!/bin/bash
 set -e
 
 echo "============================================="
 echo "        VPSHub Agent Bootstrap Script        "
 echo "============================================="
-echo ""
 
 # 1. System Update
 echo "[1/4] Updating system packages..."
@@ -218,61 +217,64 @@ elif command -v yum &> /dev/null; then
     sudo yum update -y -q >/dev/null 2>&1
 fi
 
-# 2. Check for Docker
-echo "[2/4] Checking for Docker dependency..."
+# 2. Install Docker if missing
+echo "[2/4] Checking Docker..."
 if ! command -v docker &> /dev/null; then
-    echo "      Docker not found. Installing Docker..."
+    echo "Installing Docker..."
     curl -fsSL https://get.docker.com -o get-docker.sh
     sudo sh get-docker.sh >/dev/null 2>&1
     rm get-docker.sh
 else
-    echo "      Docker is already installed."
+    echo "Docker already installed"
 fi
 
-# 3. Pull agent image
+# 3. Pull agent (placeholder)
 echo "[3/4] Pulling VPSHub Agent..."
-# Simulated pulling of the agent container
 sleep 2
 
-# 4. Gather system stats and register agent
+# 4. Register agent
 echo "[4/4] Registering agent with VPSHub..."
 
-# Gather CPU and Memory
 CPU_CORES=$(nproc 2>/dev/null || echo 1)
-MEMORY_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 1024)
+MEMORY_MB=$(free -m | awk '/^Mem:/{print $2}' || echo 1024)
 
-# Create dynamic payload
 PAYLOAD=$(cat <<EOF
 {
   "serverId": "${serverId}",
   "token": "agent-token",
-  "cpu": \${CPU_CORES},
-  "memory": \${MEMORY_MB}
+  "cpu": $CPU_CORES,
+  "memory": $MEMORY_MB
 }
 EOF
 )
 
-RESPONSE=$(curl -s -X POST ${apiUrl}/servers/register-agent \\
+echo "Sending payload:"
+echo "$PAYLOAD"
+
+RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST ${apiUrl}/servers/register-agent \\
   -H "Content-Type: application/json" \\
-  -w "%{http_code}" \\
-  -d "\$PAYLOAD")
+  -d "$PAYLOAD")
 
-HTTP_CODE=$(echo "\$RESPONSE" | tr -d '\n' | sed -e 's/.*\\([0-9]\\{3\\}\\)$/\\1/')
+HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 
-if [ "\$HTTP_CODE" -eq 200 ] || [ "\$HTTP_CODE" -eq 201 ]; then
+echo "Server response code: $HTTP_CODE"
+
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     echo ""
     echo "============================================="
-    echo "  Bootstrap completed successfully! ✓"
-    echo "  Your VPS is now connected to VPSHub."
-    echo "  Detected CPU: \${CPU_CORES} cores, Mem: \${MEMORY_MB} MB"
+    echo " Bootstrap completed successfully! ✓"
+    echo " CPU: $CPU_CORES cores"
+    echo " Memory: $MEMORY_MB MB"
     echo "============================================="
 else
-    echo "Failed to register agent. HTTP Status: \$HTTP_CODE"
+    echo "Registration failed"
+    echo "Response body:"
+    echo "$HTTP_BODY"
     exit 1
 fi
 `;
   }
-
   async getServerStats(userId: string, serverId: string) {
     const server = await this.findOne(userId, serverId);
 
