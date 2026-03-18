@@ -9,7 +9,14 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Check, ShieldCheck, GitBranch, Rocket, X } from "lucide-react";
+import {
+  Check,
+  Box,
+  Rocket,
+  GitBranch,
+  X,
+  ShieldCheck,
+} from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -38,6 +45,7 @@ export function DeployTemplateModal({
   serverId,
 }: DeployTemplateModalProps) {
   const [domain, setDomain] = useState("");
+  const [repositoryUrl, setRepositoryUrl] = useState(project?.repositoryUrl || "");
   const [selectedTemplateId, setSelectedTemplateId] = useState(
     initialTemplate?.id || "",
   );
@@ -45,6 +53,7 @@ export function DeployTemplateModal({
   const [buildCmd, setBuildCmd] = useState("");
   const [installCmd, setInstallCmd] = useState("");
   const [rootDir, setRootDir] = useState("");
+  const [exposedPort, setExposedPort] = useState("");
   const [envVars, setEnvVars] = useState([{ key: "", value: "" }]);
   const { data: templates } = useTemplates();
   const { createDeployment, isCreating } = useDeploymentMutations();
@@ -52,6 +61,7 @@ export function DeployTemplateModal({
     (templates || []).find((t: any) => t.id === selectedTemplateId) ||
     initialTemplate;
   const isNodeTemplate = selectedTemplate?.type === "NODE";
+  const isDockerTemplate = selectedTemplate?.type === "DOCKER";
 
   useEffect(() => {
     if (!isNodeTemplate) {
@@ -92,6 +102,11 @@ export function DeployTemplateModal({
       return;
     }
 
+    if (isDockerTemplate && !repositoryUrl && !project?.repositoryUrl) {
+      toast.error("Repository URL is required for Docker deployments");
+      return;
+    }
+
     if (isNodeTemplate && !startCmd && !selectedTemplate?.startCmd) {
       toast.error("Start command is required for Node deployments");
       return;
@@ -108,15 +123,15 @@ export function DeployTemplateModal({
         serverId,
         projectId: project?.id,
         templateId: templateId,
-        name: project?.name, // Use project name or fallback in DTO logic
+        name: project?.name,
         domain: domain || undefined,
-        // Inherit from project or current state
-        repositoryUrl: project?.repositoryUrl,
-        dockerImage: project?.dockerImage,
+        repositoryUrl: repositoryUrl || project?.repositoryUrl || undefined,
+        dockerImage: !repositoryUrl ? project?.dockerImage : undefined,
         startCmd: isNodeTemplate ? startCmd || undefined : undefined,
-        buildCmd: isNodeTemplate ? buildCmd || undefined : undefined,
+        buildCmd: isNodeTemplate || isDockerTemplate ? buildCmd || undefined : undefined,
         installCmd: isNodeTemplate ? installCmd || undefined : undefined,
-        rootDir: isNodeTemplate ? rootDir || undefined : undefined,
+        rootDir: isNodeTemplate || isDockerTemplate ? rootDir || undefined : undefined,
+        exposedPort: isDockerTemplate && exposedPort ? Number(exposedPort) : undefined,
         env: Object.keys(formattedEnv).length > 0 ? formattedEnv : undefined,
       });
       toast.success(`Deployment started for ${project?.name || "template"}`);
@@ -275,6 +290,74 @@ export function DeployTemplateModal({
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {isDockerTemplate && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl bg-violet/10 border border-violet/20 flex gap-3">
+                <div className="w-10 h-10 rounded-lg bg-violet/20 flex items-center justify-center flex-shrink-0">
+                  <Box className="w-5 h-5 text-violet" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-foreground">Docker Smart Deployment</h4>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    We'll clone your repository and detect <strong>docker-compose.yml</strong> automatically. Each service gets its own subdomain via Traefik.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                  <GitBranch className="w-4 h-4 text-violet" />
+                  Repository URL <span className="text-red-400">*</span>
+                </label>
+                <Input
+                  placeholder="https://github.com/user/repo.git"
+                  value={repositoryUrl}
+                  onChange={(e) => setRepositoryUrl(e.target.value)}
+                  className="bg-white/5 border-white/10 text-white placeholder:text-muted-foreground/50"
+                />
+                <p className="text-xs text-muted-foreground">Public or private GitHub repository containing a Dockerfile or docker-compose.yml</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium text-foreground">
+                    Root Directory
+                  </label>
+                  <Input
+                    placeholder="."
+                    value={rootDir}
+                    onChange={(e) => setRootDir(e.target.value)}
+                    className="bg-white/5 border-white/10 text-white placeholder:text-muted-foreground/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-foreground">
+                    Exposed Port
+                  </label>
+                  <Input
+                    type="number"
+                    placeholder="80"
+                    value={exposedPort}
+                    onChange={(e) => setExposedPort(e.target.value)}
+                    className="bg-white/5 border-white/10 text-white placeholder:text-muted-foreground/50"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-foreground">
+                  Custom Dockerfile Path (Optional)
+                </label>
+                <Input
+                  placeholder="Dockerfile"
+                  value={buildCmd}
+                  onChange={(e) => setBuildCmd(e.target.value)}
+                  className="bg-white/5 border-white/10 text-white placeholder:text-muted-foreground/50"
+                />
               </div>
             </div>
           )}

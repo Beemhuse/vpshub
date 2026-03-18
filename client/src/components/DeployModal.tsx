@@ -114,7 +114,9 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
   const [buildCmd, setBuildCmd] = useState("");
   const [installCmd, setInstallCmd] = useState("");
   const [rootDir, setRootDir] = useState("");
+  const [exposedPort, setExposedPort] = useState("");
   const isNodeTemplate = selectedTemplate?.type === "NODE";
+  const isDockerTemplate = selectedTemplate?.type === "DOCKER";
 
   const filteredTemplates = templates.filter((template) => {
     const matchesSearch =
@@ -132,6 +134,7 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
     setBuildCmd("");
     setInstallCmd("");
     setRootDir("");
+    setExposedPort("");
   };
 
   const handleDeploy = async () => {
@@ -151,9 +154,10 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
         domain: domain || undefined,
         templateId: selectedTemplate.id,
         startCmd: isNodeTemplate ? startCmd || undefined : undefined,
-        buildCmd: isNodeTemplate ? buildCmd || undefined : undefined,
+        buildCmd: isNodeTemplate || isDockerTemplate ? buildCmd || undefined : undefined,
         installCmd: isNodeTemplate ? installCmd || undefined : undefined,
-        rootDir: isNodeTemplate ? rootDir || undefined : undefined,
+        rootDir: isNodeTemplate || isDockerTemplate ? rootDir || undefined : undefined,
+        exposedPort: isDockerTemplate && exposedPort ? Number(exposedPort) : undefined,
         env: envVars.reduce((acc: any, { key, value }) => {
           if (key.trim()) acc[key.trim()] = value;
           return acc;
@@ -195,6 +199,7 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
       setBuildCmd("");
       setInstallCmd("");
       setRootDir("");
+      setExposedPort("");
     } catch (e) {
       console.error(e);
       alert("Failed to start deployment");
@@ -434,6 +439,60 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                       placeholder="e.g. apps/api"
                       value={rootDir}
                       onChange={(e) => setRootDir(e.target.value)}
+                      className="flex-1 bg-white/5 border-white/10 text-foreground"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {isDockerTemplate && repositoryUrlState && (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-xl bg-violet/10 border border-violet/20 flex gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-violet/20 flex items-center justify-center flex-shrink-0">
+                      <Box className="w-5 h-5 text-violet" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-semibold text-foreground">Docker Smart Deployment</h4>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        We'll automatically detect your services. <strong>Frontends</strong> and <strong>APIs</strong> will get their own subdomains (e.g. <code>frontend.{domain || "your-app.nip.io"}</code>) via Traefik.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-2">
+                        Root Directory
+                      </label>
+                      <Input
+                        placeholder="."
+                        value={rootDir}
+                        onChange={(e) => setRootDir(e.target.value)}
+                        className="flex-1 bg-white/5 border-white/10 text-foreground"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-2">
+                        Exposed Port
+                      </label>
+                      <Input
+                        type="number"
+                        placeholder="80"
+                        value={exposedPort}
+                        onChange={(e) => setExposedPort(e.target.value)}
+                        className="flex-1 bg-white/5 border-white/10 text-foreground"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">
+                      Custom Dockerfile Path (Optional)
+                    </label>
+                    <Input
+                      placeholder="Dockerfile"
+                      value={buildCmd}
+                      onChange={(e) => setBuildCmd(e.target.value)}
                       className="flex-1 bg-white/5 border-white/10 text-foreground"
                     />
                   </div>

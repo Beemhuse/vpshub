@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   OnModuleInit,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ServersService } from '../servers/servers.service';
@@ -24,6 +25,8 @@ export class DeploymentsService implements OnModuleInit {
     private deploymentQueue: DeploymentQueueService,
     private logsGateway: DeploymentLogsGateway,
   ) {}
+
+  private readonly logger = new Logger('DockerDeployment');
 
   onModuleInit() {
     this.deploymentQueue.setWorker(async (task) => {
@@ -55,27 +58,52 @@ export class DeploymentsService implements OnModuleInit {
       }
       project = existingProject;
     } else {
+      // Determine project type from template if available
+      let projectType = 'static';
+      if (dto.templateId) {
+        const selectedTemplate = await this.prisma.template.findUnique({
+          where: { id: dto.templateId },
+        });
+        if (selectedTemplate?.type === 'DOCKER') projectType = 'docker';
+        else if (selectedTemplate?.type === 'NODE') projectType = 'node';
+      }
+
       // Create a new project on the fly for this deployment
       project = await this.prisma.project.create({
         data: {
           name: dto.name || 'Untitled Project',
           user: { connect: { id: userId } },
           server: { connect: { id: dto.serverId } },
+          type: projectType,
           env: dto.env,
-        },
+          rootDir: dto.rootDir,
+          buildCmd: dto.buildCmd,
+          installCmd: dto.installCmd,
+          startCmd: dto.startCmd,
+          exposedPort: dto.exposedPort ? Number(dto.exposedPort) : null,
+        } as any,
       });
     }
 
-    // Update project env if provided in deployment
+    // Update project config if provided in deployment
+    const updateData: any = {};
     if (
       dto.env &&
       JSON.stringify(dto.env) !== JSON.stringify((project as any).env)
-    ) {
+    )
+      updateData.env = dto.env;
+    if (dto.rootDir) updateData.rootDir = dto.rootDir;
+    if (dto.buildCmd) updateData.buildCmd = dto.buildCmd;
+    if (dto.installCmd) updateData.installCmd = dto.installCmd;
+    if (dto.startCmd) updateData.startCmd = dto.startCmd;
+    if (dto.exposedPort) updateData.exposedPort = Number(dto.exposedPort);
+
+    if (Object.keys(updateData).length > 0) {
       await this.prisma.project.update({
         where: { id: project.id },
-        data: { env: dto.env },
+        data: updateData,
       });
-      (project as any).env = dto.env as any;
+      Object.assign(project, updateData);
     }
 
     // If repositoryUrl supplied for the deployment and project doesn't have it, persist it to project
@@ -96,6 +124,15 @@ export class DeploymentsService implements OnModuleInit {
       template = await this.prisma.template.findUnique({
         where: { id: dto.templateId },
       });
+      // If template is DOCKER, ensure project type reflects this
+      if (template?.type === 'DOCKER' && project.type !== 'docker') {
+        console.log('Updating project type to docker');
+        await this.prisma.project.update({
+          where: { id: project.id },
+          data: { type: 'docker' },
+        });
+        project.type = 'docker';
+      }
     }
 
     if (!template) {
@@ -128,12 +165,17 @@ export class DeploymentsService implements OnModuleInit {
         serverId: dto.serverId,
         projectId: project.id,
         templateId: template?.id,
-        repositoryUrl: dto.repositoryUrl || project.repositoryUrl,
+        repositoryUrl: dto.repositoryUrl || (project as any).repositoryUrl,
         status: 'pending',
         logs: 'Deployment queued...\n',
         domain: assignedDomain,
         env: (dto.env as any) || (project as any).env || {},
-      },
+        rootDir: dto.rootDir || (project as any).rootDir,
+        buildCmd: dto.buildCmd || (project as any).buildCmd,
+        installCmd: dto.installCmd || (project as any).installCmd,
+        startCmd: dto.startCmd || (project as any).startCmd,
+        exposedPort: dto.exposedPort || (project as any).exposedPort,
+      } as any,
     });
 
     // Add to queue for processing
@@ -198,7 +240,24 @@ export class DeploymentsService implements OnModuleInit {
           })
         : null;
 
+      const isDockerDeploy =
+        template?.type === 'DOCKER' ||
+        (!template && project?.type === 'docker');
+
       const projectName = project?.name || template?.name || 'Unknown Project';
+
+      if (isDockerDeploy) {
+        this.logger.log(`╔══════════════════════════════════════════════════╗`);
+        this.logger.log(`║   🐳 DOCKER DEPLOYMENT STARTED                   ║`);
+        this.logger.log(`╚══════════════════════════════════════════════════╝`);
+        this.logger.log(`  Project    : ${projectName}`);
+        this.logger.log(`  Deploy ID  : ${deployment.id}`);
+        this.logger.log(`  Template   : ${template?.name || 'Inferred (docker)'}`);
+        this.logger.log(`  Repo       : ${deployment.repositoryUrl || 'N/A (image-based)'}`);
+        this.logger.log(`  Domain     : ${deployment.domain || 'Auto-assigned'}`);
+        this.logger.log(`  Server     : ${server.name} (${server.ip})`);
+        this.logger.log(`──────────────────────────────────────────────────`);
+      }
 
       // Prepare repository URL with token if needed
       let repoUrlForClone = deployment.repositoryUrl || '';
@@ -227,12 +286,18 @@ export class DeploymentsService implements OnModuleInit {
         env: deployment.env as any,
         domain: deployment.domain,
         repositoryUrl: deployment.repositoryUrl,
+        rootDir: deployment.rootDir,
+        buildCmd: deployment.buildCmd,
+        installCmd: deployment.installCmd,
+        startCmd: deployment.startCmd,
+        exposedPort: deployment.exposedPort,
       };
 
       if (
         template?.type === 'DOCKER' ||
         (!template && project?.type === 'docker')
       ) {
+        this.logger.log(`[STEP 1/3] Generating Docker deployment script...`);
         deployScript = this.deploymentScripts.generateDockerDeployScript(
           projectName,
           deployment.id,
@@ -272,26 +337,53 @@ export class DeploymentsService implements OnModuleInit {
 
       await updateLogs(`Executing deployment script on ${server.name}...\n`);
 
+      const isDocker =
+        template?.type === 'DOCKER' ||
+        (!template && project?.type === 'docker');
+
+      if (isDocker) {
+        this.logger.log(`[STEP 2/3] Uploading and executing script on server via SSH...`);
+      }
+
       const output = await this.serversService.executeSshScript(
         server,
         deployScript,
         async (chunk) => {
           await updateLogs(chunk);
+          // Mirror Docker deployment SSH output to NestJS console in real-time
+          if (isDocker) {
+            chunk
+              .split('\n')
+              .filter((l) => l.trim())
+              .forEach((line) => this.logger.log(`  [SSH] ${line.trim()}`));
+          }
         },
       );
 
-      if (output.includes('Deployment successful!')) {
+      if (isDocker) {
+        this.logger.log(`[STEP 3/3] Verifying deployment success...`);
+      }
+
+      if (output.includes('--- Docker Deployment Successful ---') || output.includes('Deployment successful!')) {
         await this.prisma.deployment.update({
           where: { id: deployment.id },
           data: { status: 'completed' },
         });
         await updateLogs('\nDeployment status: COMPLETED\n');
+        if (isDocker) {
+          this.logger.log(`╔══════════════════════════════════════════════════╗`);
+          this.logger.log(`║   ✅ DOCKER DEPLOYMENT COMPLETED SUCCESSFULLY    ║`);
+          this.logger.log(`╚══════════════════════════════════════════════════╝`);
+          this.logger.log(`  Deploy ID : ${deployment.id}`);
+          this.logger.log(`  Domain    : ${deployment.domain}`);
+        }
       } else {
         throw new Error(
           'Deployment script execution ended without success confirmation.',
         );
       }
     } catch (error: any) {
+      this.logger.error(`❌ DEPLOYMENT FAILED [${task.deploymentId}]: ${error.message}`);
       await updateLogs(`\n!!! DEPLOYMENT ERROR: ${error.message} !!!\n`);
       await this.prisma.deployment.update({
         where: { id: deployment.id },
@@ -301,9 +393,12 @@ export class DeploymentsService implements OnModuleInit {
     }
   }
 
-  async findAll(userId: string) {
+  async findAll(userId: string, serverId?: string) {
     return this.prisma.deployment.findMany({
-      where: { server: { userId } },
+      where: {
+        server: { userId },
+        ...(serverId ? { serverId } : {}),
+      },
       include: { server: true },
       orderBy: { createdAt: 'desc' },
     });

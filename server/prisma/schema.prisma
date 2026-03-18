@@ -61,6 +61,11 @@ model Project {
   type          String   @default("static") // static, docker
   repositoryUrl String?
   dockerImage   String?
+  rootDir       String?
+  buildCmd      String?
+  installCmd    String?
+  startCmd      String?
+  exposedPort   Int?
   userId        String
   user          User     @relation(fields: [userId], references: [id])
   serverId      String
@@ -80,6 +85,11 @@ model Deployment {
   domain        String?
   templateId    String?
   repositoryUrl String?
+  rootDir       String?
+  buildCmd      String?
+  installCmd    String?
+  startCmd      String?
+  exposedPort   Int?
   env           Json?
   status        String   @default("pending") // pending, in-progress, completed, failed
   logs          String?

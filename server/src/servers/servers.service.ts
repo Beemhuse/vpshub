@@ -228,9 +228,53 @@ else
     echo "Docker already installed"
 fi
 
-# 3. Pull agent (placeholder)
-echo "[3/4] Pulling VPSHub Agent..."
-sleep 2
+# Install Docker Compose V2 if missing
+if ! docker compose version &> /dev/null; then
+    echo "Installing Docker Compose V2..."
+    sudo apt-get update -y -qq >/dev/null 2>&1
+    sudo apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1 || true
+fi
+
+# 3. Setup Traefik as Global Proxy
+echo "[3/4] Setting up Traefik Reverse Proxy..."
+if ! sudo docker ps -a | grep -q "vpshub-traefik"; then
+    echo "Configuring Traefik..."
+    # Stop Nginx if it's already running on 80 to prevent conflict
+    if command -v systemctl >/dev/null 2>&1 && sudo systemctl is-active --quiet nginx; then
+       echo "Temporarily stopping Nginx to avoid port 80 conflict..."
+       sudo systemctl stop nginx || true
+    fi
+    sudo docker network create vpshub-proxy 2>/dev/null || true
+    
+    # Create directory for Let's Encrypt certificates and dynamic config
+    sudo mkdir -p /etc/vpshub/traefik/acme
+    sudo mkdir -p /etc/vpshub/traefik/dynamic
+    sudo touch /etc/vpshub/traefik/acme/acme.json
+    sudo chmod 600 /etc/vpshub/traefik/acme/acme.json
+
+    sudo docker run -d \
+      --name vpshub-traefik \
+      --restart always \
+      --network vpshub-proxy \
+      -p 80:80 \
+      -p 443:443 \
+      -v /var/run/docker.sock:/var/run/docker.sock:ro \
+      -v /etc/vpshub/traefik/acme/acme.json:/letsencrypt/acme.json \
+      -v /etc/vpshub/traefik/dynamic:/etc/traefik/dynamic \
+      traefik:v2.10 \
+      --providers.docker=true \
+      --providers.docker.exposedbydefault=false \
+      --providers.file.directory=/etc/traefik/dynamic \
+      --providers.file.watch=true \
+      --entrypoints.web.address=:80 \
+      --entrypoints.websecure.address=:443 \
+      --certificatesresolvers.letsencrypt.acme.httpchallenge=true \
+      --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web \
+      --certificatesresolvers.letsencrypt.acme.email=admin@vpshub.link \
+      --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+else
+    echo "Traefik already running"
+fi
 
 # 4. Register agent
 echo "[4/4] Registering agent with VPSHub..."
@@ -264,6 +308,7 @@ if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     echo ""
     echo "============================================="
     echo " Bootstrap completed successfully! ✓"
+    echo " Traefik Proxy initialized"
     echo " CPU: $CPU_CORES cores"
     echo " Memory: $MEMORY_MB MB"
     echo "============================================="

@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   Req,
 } from '@nestjs/common';
@@ -29,7 +30,7 @@ export class ProjectsController {
 
   @Get()
   @ApiOperation({ summary: 'List projects' })
-  findAll(@Req() req, @Param('serverId') serverId?: string) {
+  findAll(@Req() req, @Query('serverId') serverId?: string) {
     return this.projectsService.findAll(req.user.id, serverId);
   }
 

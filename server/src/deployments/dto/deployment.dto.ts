@@ -57,6 +57,10 @@ export class CreateDeploymentDto {
   @IsString()
   rootDir?: string;
 
+  @ApiProperty({ example: 8080, required: false })
+  @IsOptional()
+  exposedPort?: number;
+
   @ApiProperty({ example: { NODE_ENV: 'production' }, required: false })
   @IsOptional()
   env?: Record<string, string>;
