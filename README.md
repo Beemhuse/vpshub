@@ -1,128 +1,218 @@
-# React + TypeScript + Vite
+# VPSHub
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+VPSHub is a self-hosted control panel for connecting remote VPS servers, deploying apps over SSH, and managing previews, logs, and runtime services from a single UI.
 
-Currently, two official plugins are available:
+The project currently ships with:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- A `client/` app built with React, TypeScript, Vite, Tailwind, and TanStack Query
+- A `server/` app built with NestJS, Prisma, PostgreSQL, Swagger, and WebSocket deployment logs
+- Shared `packages/` directories reserved for reusable SDK and UI code
 
-## React Compiler
+## What VPSHub does
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Connect Linux VPS instances over SSH and bootstrap them automatically
+- Install and configure a global Traefik reverse proxy on connected servers
+- Deploy static sites, Node.js apps with PM2, and Docker or Docker Compose workloads
+- Assign preview domains automatically with `nip.io` when no custom domain is supplied
+- Provision HTTPS routing through Traefik and Let's Encrypt
+- Stream deployment logs back to the dashboard in real time
+- Browse repositories through GitHub OAuth during deployment flows
+- Support local auth plus Google OAuth sign-in
+- Expose server stats, Docker controls, PM2 controls, templates, billing, settings, and file actions in the UI
 
-## Expanding the ESLint configuration
+## Repository layout
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+```text
+vpshub/
+|- client/                 React frontend
+|- server/                 NestJS API and Prisma schema
+|- packages/               Shared package workspaces
+|- docker-compose.yml      Local full-stack container setup
+|- .env.example            Example environment variables
+|- deployment_docs.md      Node/static deployment notes
+|- deployment_guide.md     Traefik + Docker Compose production guide
+|- DOCKER.md               Docker-specific project notes
+`- CONTRIBUTING.md         Contribution guide
+```
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    VPSHub is a small control panel for deploying and previewing applications on remote VPS servers. It includes a NestJS backend (with Prisma), and a React + Vite frontend. The platform assigns a preview domain automatically (using nip.io) so projects are accessible immediately; users can later attach a custom domain and provision SSL.
+## Core architecture
 
-    ---
+### Frontend
 
-    **Highlights**
-    - Connect and manage remote servers via SSH
-    - Deploy apps using Docker, Node (PM2), or static Nginx sites
-    - Automatic preview domains when no custom domain is provided
-    - Deployment logs and status in the UI
+- Vite + React 19 application in `client/`
+- Main views include servers, dashboard, templates, projects, deployments, logs, billing, and settings
+- Uses an Axios client configured with `VITE_API_URL`
+- Reads the JWT from the `access_token` cookie and attaches it as a bearer token
 
-    ---
+### Backend
 
-    ## Repository layout
+- NestJS API in `server/`
+- Prisma models for users, servers, projects, deployments, templates, and activities
+- Swagger UI exposed at `http://localhost:3000/api`
+- Modules currently include auth, dashboard, servers, projects, deployments, billing, settings, logs, templates, and files
 
-    - `server/` — NestJS backend and Prisma schema
-      - `src/` — controllers and services (deployments, servers, projects, auth)
-      - `prisma/` — `schema.prisma`, migrations and seed scripts
-    - `src/` — frontend React app (Vite, TypeScript)
-      - `components/`, `views/`, `services/`
+### Deployment model
 
-    ---
+When a server is connected, VPSHub bootstraps Docker, Docker Compose, and Traefik on the VPS. Deployments are then executed remotely over SSH:
 
-    ## Quick local setup
+- Static deployments clone a repository, build it if needed, serve it with Nginx, and route traffic through Traefik
+- Node deployments clone a repository, install dependencies, run the app under PM2, and proxy traffic through Nginx and Traefik
+- Docker deployments either run a single container or detect `docker-compose.yml` and bring the stack up with automatic Traefik labels
 
-    Prerequisites
-    - Node.js >= 18
-    - pnpm (recommended) or npm/yarn
-    - PostgreSQL (or any DB supported by Prisma configured via `DATABASE_URL`)
+If no custom domain is supplied, VPSHub assigns a default preview domain based on the server IP, for example `my-app.203.0.113.10.nip.io`.
 
-    Backend (server)
+## Local development
 
-    1. Install dependencies and generate Prisma client:
+### Prerequisites
 
-    ```powershell
-    cd server
-    pnpm install
-    npx prisma generate
-    ```
+- Node.js 18 or newer
+- `pnpm`
+- PostgreSQL
+- Docker Desktop or Docker Engine if you want to run the full stack with Compose
 
-    2. Configure environment variables in `server/.env` (example variables):
+### Environment variables
 
-    - `DATABASE_URL` — Postgres connection string
-    - `JWT_SECRET` — secret for authentication
+The repository includes a root `.env.example` with the main values used for local Docker-based setup.
 
-    3. Run migrations and (optional) seed:
+Important variables:
 
-    ```powershell
-    cd server
-    npx prisma migrate dev --name init
-    pnpm run seed
-    ```
+- `DATABASE_URL`
+- `PORT`
+- `FRONTEND_URL`
+- `JWT_SECRET`
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+- `GITHUB_CALLBACK_URL`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_CALLBACK_URL`
+- `VITE_API_URL`
 
-    4. Start the backend:
+Recommended local defaults:
 
-    ```powershell
-    pnpm run start:dev
-    ```
+- Backend API: `http://localhost:3000`
+- Frontend app: `http://localhost:5173`
+- Swagger: `http://localhost:3000/api`
 
-    ### GitHub integration
-    To enable GitHub repository selection you must provide OAuth credentials to the backend via environment variables in `server/.env`:
+Set `client` `VITE_API_URL` explicitly to `http://localhost:3000`. The frontend source still contains a fallback to `http://localhost:3800`, so relying on the fallback will point at the wrong port in a standard local setup.
 
-    - `GITHUB_CLIENT_ID`
-    - `GITHUB_CLIENT_SECRET`
-    - `FRONTEND_URL` (optional, default: `http://localhost:5173`)
+### Option 1: Run with Docker Compose
 
-    The app will open the GitHub OAuth flow and persist an access token to the logged-in user's record so the frontend can list repositories.
+1. Copy `.env.example` to `.env.local`.
+2. Review the database and OAuth values.
+3. Start the stack:
 
-    Frontend
+```powershell
+docker compose up --build
+```
 
-    1. From repository root:
+Services:
 
-    ```powershell
-    pnpm install
-    pnpm run dev
-    ```
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:3000`
+- PostgreSQL: `localhost:5432`
 
-    2. Make sure `VITE_API_URL` (frontend env) points to running backend (default: `http://localhost:3800`).
+### Option 2: Run frontend and backend separately
 
-    ---
+#### Backend
 
-    ## Domain preview behavior
-    When creating a deployment, if no `domain` is supplied, the backend will calculate an assigned preview domain using the server IP and `nip.io` (e.g. `203.0.113.12.nip.io`). That assigned domain is saved to the `Deployment` record and, if appropriate, to the `Project` record so the UI can present a stable preview URL until a custom domain is configured.
+1. Create `server/.env` or otherwise export the required environment variables.
+2. Install dependencies:
 
-    The deployment scripts generated by the server configure Nginx and (when requested) call Certbot to provision SSL for a custom domain.
+```powershell
+cd server
+pnpm install
+```
 
-    ---
+3. Generate the Prisma client and run migrations:
 
-    ## Development notes
-    - Deploy script templates are in `server/src/deployments/deployments.service.ts`.
-    - Prisma models live in `server/prisma/schema.prisma`; if you update models, run `npx prisma migrate dev` then `npx prisma generate`.
+```powershell
+pnpm run prisma:generate
+pnpm exec prisma migrate dev
+```
 
-    ---
+4. Seed the database if needed:
 
-    ## Testing
-    - Backend tests (if present):
+```powershell
+pnpm run seed
+```
 
-    ```powershell
-    cd server
-    pnpm run test
-    ```
+5. Start the API:
 
-    ---
+```powershell
+pnpm run start:dev
+```
 
-    ## Contributing
-    See `CONTRIBUTING.md` for guidelines on contributing, branch and PR conventions, and local development tips.
+#### Frontend
 
-    ---
+1. Install dependencies:
+
+```powershell
+cd client
+pnpm install
+```
+
+2. Set `VITE_API_URL=http://localhost:3000`.
+3. Start the Vite dev server:
+
+```powershell
+pnpm run dev
+```
+
+## Authentication
+
+VPSHub currently supports:
+
+- Email/password authentication
+- Google OAuth via `/auth/google`
+- GitHub OAuth connection for repository access during deployments
+
+GitHub OAuth is used to:
+
+- Request an authorization URL from `/auth/github/url`
+- Exchange the returned code through `/auth/github/exchange`
+- Persist the GitHub access token on the authenticated user
+- List repositories from `/auth/github/repos`
+
+## API and data model
+
+The backend uses Prisma with PostgreSQL. Main models:
+
+- `User`
+- `Server`
+- `Project`
+- `Deployment`
+- `Template`
+- `Activity`
+
+Useful backend commands:
+
+```powershell
+cd server
+pnpm run start:dev
+pnpm run build
+pnpm run test
+pnpm run prisma:generate
+pnpm run prisma:migrate
+```
+
+Useful frontend commands:
+
+```powershell
+cd client
+pnpm run dev
+pnpm run build
+pnpm run lint
+pnpm run preview
+```
+
+## Additional docs
+
+- [deployment_docs.md](./deployment_docs.md)
+- [deployment_guide.md](./deployment_guide.md)
+- [DOCKER.md](./DOCKER.md)
+- [CONTRIBUTING.md](./CONTRIBUTING.md)
+
+## Current status
+
+The root README and `server/README.md` started from framework templates. This root README now reflects the current VPSHub codebase and deployment workflow, including Traefik-based routing, GitHub integration, Google auth, and the split `client/` plus `server/` repository structure.

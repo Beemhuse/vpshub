@@ -1,20 +1,25 @@
-import { useState } from 'react';
-import { 
-  X, 
-  Search, 
-  ArrowRight, 
-  Check, 
-  Globe, 
-  Database, 
+import { useState } from "react";
+import {
+  X,
+  Search,
+  ArrowRight,
+  Check,
+  Globe,
+  Database,
   Box,
   Code2,
-  Server
-} from 'lucide-react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
-import api from '@/services/api';
+  Server,
+} from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import api from "@/services/api";
 
 interface DeployModalProps {
   open: boolean;
@@ -29,97 +34,136 @@ interface Template {
   icon: React.ElementType;
   category: string;
   tags: string[];
+  type?: "NODE" | "STATIC" | "DOCKER" | "DATABASE";
 }
 
 const templates: Template[] = [
-  { 
-    id: 'nextjs', 
-    name: 'Next.js', 
-    description: 'Full-stack React framework with App Router',
+  {
+    id: "nextjs",
+    name: "Next.js",
+    description: "Full-stack React framework with App Router",
     icon: Code2,
-    category: 'Frontend',
-    tags: ['React', 'SSR', 'TypeScript']
+    category: "Frontend",
+    tags: ["React", "SSR", "TypeScript"],
+    type: "NODE",
   },
-  { 
-    id: 'node-api', 
-    name: 'Node.js API', 
-    description: 'Express REST API with TypeScript',
+  {
+    id: "node-api",
+    name: "Node.js API",
+    description: "Express REST API with TypeScript",
     icon: Server,
-    category: 'Backend',
-    tags: ['Express', 'REST', 'TypeScript']
+    category: "Backend",
+    tags: ["Express", "REST", "TypeScript"],
+    type: "NODE",
   },
-  { 
-    id: 'postgres', 
-    name: 'PostgreSQL', 
-    description: 'Managed PostgreSQL database',
+  {
+    id: "postgres",
+    name: "PostgreSQL",
+    description: "Managed PostgreSQL database",
     icon: Database,
-    category: 'Database',
-    tags: ['SQL', 'Relational']
+    category: "Database",
+    tags: ["SQL", "Relational"],
+    type: "DATABASE",
   },
-  { 
-    id: 'redis', 
-    name: 'Redis', 
-    description: 'In-memory data store and cache',
+  {
+    id: "redis",
+    name: "Redis",
+    description: "In-memory data store and cache",
     icon: Database,
-    category: 'Database',
-    tags: ['Cache', 'NoSQL']
+    category: "Database",
+    tags: ["Cache", "NoSQL"],
+    type: "DATABASE",
   },
-  { 
-    id: 'docker-compose', 
-    name: 'Docker Compose', 
-    description: 'Multi-container application stack',
+  {
+    id: "docker-compose",
+    name: "Docker Compose",
+    description: "Multi-container application stack",
     icon: Box,
-    category: 'Docker',
-    tags: ['Containers', 'Multi-service']
+    category: "Docker",
+    tags: ["Containers", "Multi-service"],
+    type: "DOCKER",
   },
-  { 
-    id: 'static-site', 
-    name: 'Static Site', 
-    description: 'Nginx-powered static site hosting',
+  {
+    id: "static-site",
+    name: "Static Site",
+    description: "Nginx-powered static site hosting",
     icon: Globe,
-    category: 'Frontend',
-    tags: ['Nginx', 'Static']
+    category: "Frontend",
+    tags: ["Nginx", "Static"],
+    type: "STATIC",
   },
 ];
 
-const categories = ['All', 'Frontend', 'Backend', 'Database', 'Docker'];
+const categories = ["All", "Frontend", "Backend", "Database", "Docker"];
 
 export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('All');
-  const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
-  const [step, setStep] = useState<'select' | 'configure' | 'deploying'>('select');
-  const [domain, setDomain] = useState('');
-  const [repositoryUrlState, setRepositoryUrlState] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("All");
+  const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(
+    null,
+  );
+  const [step, setStep] = useState<"select" | "configure" | "deploying">(
+    "select",
+  );
+  const [domain, setDomain] = useState("");
+  const [repositoryUrlState, setRepositoryUrlState] = useState("");
   const [githubRepos, setGithubRepos] = useState<any[]>([]);
   const [showRepoPicker, setShowRepoPicker] = useState(false);
-  const [envVars, setEnvVars] = useState([{ key: '', value: '' }]);
+  const [envVars, setEnvVars] = useState([{ key: "", value: "" }]);
+  const [startCmd, setStartCmd] = useState("");
+  const [buildCmd, setBuildCmd] = useState("");
+  const [installCmd, setInstallCmd] = useState("");
+  const [rootDir, setRootDir] = useState("");
+  const [exposedPort, setExposedPort] = useState("");
+  const isNodeTemplate = selectedTemplate?.type === "NODE";
+  const isDockerTemplate = selectedTemplate?.type === "DOCKER";
 
-  const filteredTemplates = templates.filter(template => {
-    const matchesSearch = template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         template.description.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === 'All' || template.category === selectedCategory;
+  const filteredTemplates = templates.filter((template) => {
+    const matchesSearch =
+      template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      template.description.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesCategory =
+      selectedCategory === "All" || template.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
   const handleTemplateSelect = (template: Template) => {
     setSelectedTemplate(template);
-    setStep('configure');
+    setStep("configure");
+    setStartCmd("");
+    setBuildCmd("");
+    setInstallCmd("");
+    setRootDir("");
+    setExposedPort("");
   };
 
   const handleDeploy = async () => {
     if (!selectedTemplate) return;
     if (!repositoryUrlState && !selectedTemplate) return;
+    if (isNodeTemplate && !startCmd) {
+      alert("Start command is required for Node deployments.");
+      return;
+    }
 
-    setStep('deploying');
+    setStep("deploying");
 
     try {
       const payload: any = {
-        serverId: ({} as any),
+        serverId: {} as any,
         repositoryUrl: repositoryUrlState || undefined,
         domain: domain || undefined,
         templateId: selectedTemplate.id,
+        startCmd: isNodeTemplate ? startCmd || undefined : undefined,
+        buildCmd: isNodeTemplate || isDockerTemplate ? buildCmd || undefined : undefined,
+        installCmd: isNodeTemplate ? installCmd || undefined : undefined,
+        rootDir: isNodeTemplate || isDockerTemplate ? rootDir || undefined : undefined,
+        exposedPort: isDockerTemplate && exposedPort ? Number(exposedPort) : undefined,
+        env: envVars.reduce((acc: any, { key, value }) => {
+          if (key.trim()) acc[key.trim()] = value;
+          return acc;
+        }, {}),
       };
+      if (Object.keys(payload.env).length === 0) delete payload.env;
 
       // serverId will be provided by parent via props in the component usage
       // we don't have direct access to the prop variable here unless passed in
@@ -132,30 +176,46 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
         // no-op
       }
 
-      const serverIdFinal = serverId || (localStorage.getItem('vpshub_selectedServer') ? JSON.parse(localStorage.getItem('vpshub_selectedServer') as string).id : null);
+      const serverIdFinal =
+        serverId ||
+        (localStorage.getItem("vpshub_selectedServer")
+          ? JSON.parse(localStorage.getItem("vpshub_selectedServer") as string)
+              .id
+          : null);
       payload.serverId = serverIdFinal;
 
-      const res = await api.post('/deployments', payload);
+      const res = await api.post("/deployments", payload);
       const deployment = res.data;
       // Show quick feedback and close
-      alert(`Deployment started. Preview domain: ${deployment.domain || 'N/A'}`);
+      alert(
+        `Deployment started. Preview domain: ${deployment.domain || "N/A"}`,
+      );
       onClose();
-      setStep('select');
+      setStep("select");
       setSelectedTemplate(null);
-      setDomain('');
-      setEnvVars([{ key: '', value: '' }]);
+      setDomain("");
+      setEnvVars([{ key: "", value: "" }]);
+      setStartCmd("");
+      setBuildCmd("");
+      setInstallCmd("");
+      setRootDir("");
+      setExposedPort("");
     } catch (e) {
       console.error(e);
-      alert('Failed to start deployment');
-      setStep('configure');
+      alert("Failed to start deployment");
+      setStep("configure");
     }
   };
 
   const addEnvVar = () => {
-    setEnvVars([...envVars, { key: '', value: '' }]);
+    setEnvVars([...envVars, { key: "", value: "" }]);
   };
 
-  const updateEnvVar = (index: number, field: 'key' | 'value', value: string) => {
+  const updateEnvVar = (
+    index: number,
+    field: "key" | "value",
+    value: string,
+  ) => {
     const newEnvVars = [...envVars];
     newEnvVars[index][field] = value;
     setEnvVars(newEnvVars);
@@ -171,11 +231,11 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
         <DialogHeader className="px-6 py-4 border-b border-white/10">
           <div className="flex items-center justify-between">
             <DialogTitle className="text-xl font-semibold text-foreground">
-              {step === 'select' && 'Deploy Template'}
-              {step === 'configure' && 'Configure Deployment'}
-              {step === 'deploying' && 'Deploying...'}
+              {step === "select" && "Deploy Template"}
+              {step === "configure" && "Configure Deployment"}
+              {step === "deploying" && "Deploying..."}
             </DialogTitle>
-            <button 
+            <button
               onClick={onClose}
               className="w-8 h-8 rounded-lg hover:bg-white/10 flex items-center justify-center transition-colors"
             >
@@ -184,7 +244,7 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
           </div>
         </DialogHeader>
 
-        {step === 'select' && (
+        {step === "select" && (
           <div className="p-6">
             {/* Search and Filters */}
             <div className="flex gap-4 mb-6">
@@ -209,7 +269,7 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                     "px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all",
                     selectedCategory === category
                       ? "bg-violet/20 text-violet border border-violet/30"
-                      : "bg-white/5 text-muted-foreground hover:bg-white/10 border border-transparent"
+                      : "bg-white/5 text-muted-foreground hover:bg-white/10 border border-transparent",
                   )}
                 >
                   {category}
@@ -230,13 +290,17 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <h3 className="font-semibold text-foreground">{template.name}</h3>
+                      <h3 className="font-semibold text-foreground">
+                        {template.name}
+                      </h3>
                       <ArrowRight className="w-4 h-4 text-violet opacity-0 group-hover:opacity-100 transition-opacity" />
                     </div>
-                    <p className="text-sm text-muted-foreground mt-1">{template.description}</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {template.description}
+                    </p>
                     <div className="flex gap-2 mt-3">
                       {template.tags.map((tag) => (
-                        <span 
+                        <span
                           key={tag}
                           className="px-2 py-0.5 rounded-full text-xs bg-white/10 text-muted-foreground"
                         >
@@ -251,10 +315,10 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
           </div>
         )}
 
-        {step === 'configure' && selectedTemplate && (
+        {step === "configure" && selectedTemplate && (
           <div className="p-6">
             <button
-              onClick={() => setStep('select')}
+              onClick={() => setStep("select")}
               className="text-sm text-violet hover:text-violet-400 mb-4 flex items-center gap-1"
             >
               <ArrowRight className="w-4 h-4 rotate-180" />
@@ -266,8 +330,12 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                 <selectedTemplate.icon className="w-7 h-7 text-violet" />
               </div>
               <div>
-                <h3 className="text-lg font-semibold text-foreground">{selectedTemplate.name}</h3>
-                <p className="text-sm text-muted-foreground">{selectedTemplate.description}</p>
+                <h3 className="text-lg font-semibold text-foreground">
+                  {selectedTemplate.name}
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  {selectedTemplate.description}
+                </p>
               </div>
             </div>
 
@@ -289,7 +357,9 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
 
               {/* Repository selection (GitHub) */}
               <div>
-                <label className="block text-sm font-medium text-foreground mb-2">Repository</label>
+                <label className="block text-sm font-medium text-foreground mb-2">
+                  Repository
+                </label>
                 <div className="flex gap-2">
                   <Input
                     placeholder="Repository URL or select from GitHub"
@@ -300,7 +370,7 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                   <button
                     onClick={async () => {
                       try {
-                        const res = await api.get('/auth/github/repos');
+                        const res = await api.get("/auth/github/repos");
                         const data = res.data;
                         if (Array.isArray(data) && data.length > 0) {
                           setGithubRepos(data);
@@ -312,11 +382,11 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                       }
 
                       try {
-                        const urlRes = await api.get('/auth/github/url');
+                        const urlRes = await api.get("/auth/github/url");
                         const { url } = urlRes.data;
-                        window.open(url, '_blank', 'noopener');
+                        window.open(url, "_blank", "noopener");
                       } catch (e) {
-                        console.error('Failed to open GitHub auth URL', e);
+                        console.error("Failed to open GitHub auth URL", e);
                       }
                     }}
                     className="px-3 rounded-lg bg-white/5 hover:bg-white/10 text-muted-foreground"
@@ -325,6 +395,109 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                   </button>
                 </div>
               </div>
+
+              {isNodeTemplate && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">
+                      Start Command
+                    </label>
+                    <Input
+                      placeholder="npm run start"
+                      value={startCmd}
+                      onChange={(e) => setStartCmd(e.target.value)}
+                      className="flex-1 bg-white/5 border-white/10 text-foreground"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">
+                      Build Command (Optional)
+                    </label>
+                    <Input
+                      placeholder="npm run build"
+                      value={buildCmd}
+                      onChange={(e) => setBuildCmd(e.target.value)}
+                      className="flex-1 bg-white/5 border-white/10 text-foreground"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">
+                      Install Command (Optional)
+                    </label>
+                    <Input
+                      placeholder="npm install"
+                      value={installCmd}
+                      onChange={(e) => setInstallCmd(e.target.value)}
+                      className="flex-1 bg-white/5 border-white/10 text-foreground"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">
+                      Root Directory (Optional)
+                    </label>
+                    <Input
+                      placeholder="e.g. apps/api"
+                      value={rootDir}
+                      onChange={(e) => setRootDir(e.target.value)}
+                      className="flex-1 bg-white/5 border-white/10 text-foreground"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {isDockerTemplate && repositoryUrlState && (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-xl bg-violet/10 border border-violet/20 flex gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-violet/20 flex items-center justify-center flex-shrink-0">
+                      <Box className="w-5 h-5 text-violet" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-semibold text-foreground">Docker Smart Deployment</h4>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        We'll automatically detect your services. <strong>Frontends</strong> and <strong>APIs</strong> will get their own subdomains (e.g. <code>frontend.{domain || "your-app.nip.io"}</code>) via Traefik.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-2">
+                        Root Directory
+                      </label>
+                      <Input
+                        placeholder="."
+                        value={rootDir}
+                        onChange={(e) => setRootDir(e.target.value)}
+                        className="flex-1 bg-white/5 border-white/10 text-foreground"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-2">
+                        Exposed Port
+                      </label>
+                      <Input
+                        type="number"
+                        placeholder="80"
+                        value={exposedPort}
+                        onChange={(e) => setExposedPort(e.target.value)}
+                        className="flex-1 bg-white/5 border-white/10 text-foreground"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">
+                      Custom Dockerfile Path (Optional)
+                    </label>
+                    <Input
+                      placeholder="Dockerfile"
+                      value={buildCmd}
+                      onChange={(e) => setBuildCmd(e.target.value)}
+                      className="flex-1 bg-white/5 border-white/10 text-foreground"
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* Environment Variables */}
               <div>
@@ -345,13 +518,17 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                       <Input
                         placeholder="KEY"
                         value={envVar.key}
-                        onChange={(e) => updateEnvVar(index, 'key', e.target.value)}
+                        onChange={(e) =>
+                          updateEnvVar(index, "key", e.target.value)
+                        }
                         className="flex-1 bg-white/5 border-white/10 text-foreground text-sm"
                       />
                       <Input
                         placeholder="value"
                         value={envVar.value}
-                        onChange={(e) => updateEnvVar(index, 'value', e.target.value)}
+                        onChange={(e) =>
+                          updateEnvVar(index, "value", e.target.value)
+                        }
                         className="flex-1 bg-white/5 border-white/10 text-foreground text-sm"
                       />
                       {envVars.length > 1 && (
@@ -380,8 +557,15 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
               <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
                 <div className="w-full max-w-2xl bg-dark-100 border border-white/10 rounded-xl p-4">
                   <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-lg font-semibold">Select a GitHub repository</h3>
-                    <button onClick={() => setShowRepoPicker(false)} className="text-muted-foreground">Close</button>
+                    <h3 className="text-lg font-semibold">
+                      Select a GitHub repository
+                    </h3>
+                    <button
+                      onClick={() => setShowRepoPicker(false)}
+                      className="text-muted-foreground"
+                    >
+                      Close
+                    </button>
                   </div>
                   <div className="max-h-80 overflow-y-auto space-y-2">
                     {githubRepos.map((r) => (
@@ -396,7 +580,9 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
                         <div className="flex items-center justify-between">
                           <div>
                             <div className="font-medium">{r.name}</div>
-                            <div className="text-xs text-muted-foreground">{r.clone_url}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {r.clone_url}
+                            </div>
                           </div>
                         </div>
                       </button>
@@ -408,7 +594,7 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
           </div>
         )}
 
-        {step === 'deploying' && selectedTemplate && (
+        {step === "deploying" && selectedTemplate && (
           <div className="p-6 flex flex-col items-center justify-center min-h-[400px]">
             <div className="relative w-20 h-20 mb-6">
               <div className="absolute inset-0 rounded-full border-4 border-violet/20" />
@@ -424,11 +610,13 @@ export function DeployModal({ open, onClose, serverId }: DeployModalProps) {
               This may take a few moments
             </p>
             <div className="mt-6 w-64 h-2 rounded-full bg-white/10 overflow-hidden">
-              <div className="h-full bg-violet animate-[shimmer_2s_linear_infinite]" 
-                   style={{ 
-                     background: 'linear-gradient(90deg, transparent, #7B61FF, transparent)',
-                     backgroundSize: '200% 100%'
-                   }} 
+              <div
+                className="h-full bg-violet animate-[shimmer_2s_linear_infinite]"
+                style={{
+                  background:
+                    "linear-gradient(90deg, transparent, #7B61FF, transparent)",
+                  backgroundSize: "200% 100%",
+                }}
               />
             </div>
           </div>

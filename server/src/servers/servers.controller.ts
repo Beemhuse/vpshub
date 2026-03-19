@@ -19,7 +19,7 @@ import {
   ServerStatsDto,
   TerminalCommandDto,
 } from './dto/server.dto';
-import { AuthGuard } from '@nestjs/passport';
+// import { AuthGuard } from '@nestjs/passport';
 import {
   ApiTags,
   ApiOperation,
@@ -129,6 +129,26 @@ export class ServersController {
       req.user.id,
       id,
       dto.command,
+    );
+  }
+
+  @Get(':id/pm2')
+  getPm2Processes(@Req() req: any, @Param('id') id: string) {
+    return this.serversService.getPm2Processes(req.user.id, id);
+  }
+
+  @Post(':id/pm2/:nameOrId/:action')
+  handlePm2Action(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Param('nameOrId') nameOrId: string,
+    @Param('action') action: string,
+  ) {
+    return this.serversService.handlePm2Action(
+      req.user.id,
+      id,
+      nameOrId,
+      action,
     );
   }
 

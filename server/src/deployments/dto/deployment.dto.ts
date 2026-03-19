@@ -36,4 +36,32 @@ export class CreateDeploymentDto {
   @IsOptional()
   @IsString()
   templateId?: string;
+
+  @ApiProperty({ example: 'npm start', required: false })
+  @IsOptional()
+  @IsString()
+  startCmd?: string;
+
+  @ApiProperty({ example: 'npm run build', required: false })
+  @IsOptional()
+  @IsString()
+  buildCmd?: string;
+
+  @ApiProperty({ example: 'npm install', required: false })
+  @IsOptional()
+  @IsString()
+  installCmd?: string;
+
+  @ApiProperty({ example: 'apps/web', required: false })
+  @IsOptional()
+  @IsString()
+  rootDir?: string;
+
+  @ApiProperty({ example: 8080, required: false })
+  @IsOptional()
+  exposedPort?: number;
+
+  @ApiProperty({ example: { NODE_ENV: 'production' }, required: false })
+  @IsOptional()
+  env?: Record<string, string>;
 }

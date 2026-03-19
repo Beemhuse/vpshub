@@ -49,6 +49,7 @@ model Server {
   sshPassword String?
   sshKey      String?
   sshPort     Int          @default(22)
+  domain      String?
   connectionStatus String  @default("PENDING") // PENDING, CONNECTING, CONNECTED, FAILED
 }
 
@@ -60,11 +61,17 @@ model Project {
   type          String   @default("static") // static, docker
   repositoryUrl String?
   dockerImage   String?
+  rootDir       String?
+  buildCmd      String?
+  installCmd    String?
+  startCmd      String?
+  exposedPort   Int?
   userId        String
   user          User     @relation(fields: [userId], references: [id])
   serverId      String
   server        Server   @relation(fields: [serverId], references: [id])
   deployments   Deployment[]
+  env           Json?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
@@ -78,6 +85,12 @@ model Deployment {
   domain        String?
   templateId    String?
   repositoryUrl String?
+  rootDir       String?
+  buildCmd      String?
+  installCmd    String?
+  startCmd      String?
+  exposedPort   Int?
+  env           Json?
   status        String   @default("pending") // pending, in-progress, completed, failed
   logs          String?
   createdAt     DateTime @default(now())

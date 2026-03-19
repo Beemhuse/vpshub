@@ -200,15 +200,14 @@ export class ServersService {
   }
 
   private getBootstrapCommand(serverId: string) {
-    const apiUrl = process.env.API_URL || 'http://localhost:3000';
-
+    const apiUrl = 'https://8898-105-113-10-15.ngrok-free.app';
+    console.log(`Using API URL: ${apiUrl}`);
     return `#!/bin/bash
 set -e
 
 echo "============================================="
 echo "        VPSHub Agent Bootstrap Script        "
 echo "============================================="
-echo ""
 
 # 1. System Update
 echo "[1/4] Updating system packages..."
@@ -218,61 +217,109 @@ elif command -v yum &> /dev/null; then
     sudo yum update -y -q >/dev/null 2>&1
 fi
 
-# 2. Check for Docker
-echo "[2/4] Checking for Docker dependency..."
+# 2. Install Docker if missing
+echo "[2/4] Checking Docker..."
 if ! command -v docker &> /dev/null; then
-    echo "      Docker not found. Installing Docker..."
+    echo "Installing Docker..."
     curl -fsSL https://get.docker.com -o get-docker.sh
     sudo sh get-docker.sh >/dev/null 2>&1
     rm get-docker.sh
 else
-    echo "      Docker is already installed."
+    echo "Docker already installed"
 fi
 
-# 3. Pull agent image
-echo "[3/4] Pulling VPSHub Agent..."
-# Simulated pulling of the agent container
-sleep 2
+# Install Docker Compose V2 if missing
+if ! docker compose version &> /dev/null; then
+    echo "Installing Docker Compose V2..."
+    sudo apt-get update -y -qq >/dev/null 2>&1
+    sudo apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1 || true
+fi
 
-# 4. Gather system stats and register agent
+# 3. Setup Traefik as Global Proxy
+echo "[3/4] Setting up Traefik Reverse Proxy..."
+if ! sudo docker ps -a | grep -q "vpshub-traefik"; then
+    echo "Configuring Traefik..."
+    # Stop Nginx if it's already running on 80 to prevent conflict
+    if command -v systemctl >/dev/null 2>&1 && sudo systemctl is-active --quiet nginx; then
+       echo "Temporarily stopping Nginx to avoid port 80 conflict..."
+       sudo systemctl stop nginx || true
+    fi
+    sudo docker network create vpshub-proxy 2>/dev/null || true
+    
+    # Create directory for Let's Encrypt certificates and dynamic config
+    sudo mkdir -p /etc/vpshub/traefik/acme
+    sudo mkdir -p /etc/vpshub/traefik/dynamic
+    sudo touch /etc/vpshub/traefik/acme/acme.json
+    sudo chmod 600 /etc/vpshub/traefik/acme/acme.json
+
+    sudo docker run -d \
+      --name vpshub-traefik \
+      --restart always \
+      --network vpshub-proxy \
+      -p 80:80 \
+      -p 443:443 \
+      -v /var/run/docker.sock:/var/run/docker.sock:ro \
+      -v /etc/vpshub/traefik/acme/acme.json:/letsencrypt/acme.json \
+      -v /etc/vpshub/traefik/dynamic:/etc/traefik/dynamic \
+      traefik:v2.10 \
+      --providers.docker=true \
+      --providers.docker.exposedbydefault=false \
+      --providers.file.directory=/etc/traefik/dynamic \
+      --providers.file.watch=true \
+      --entrypoints.web.address=:80 \
+      --entrypoints.websecure.address=:443 \
+      --certificatesresolvers.letsencrypt.acme.httpchallenge=true \
+      --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web \
+      --certificatesresolvers.letsencrypt.acme.email=admin@vpshub.link \
+      --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+else
+    echo "Traefik already running"
+fi
+
+# 4. Register agent
 echo "[4/4] Registering agent with VPSHub..."
 
-# Gather CPU and Memory
 CPU_CORES=$(nproc 2>/dev/null || echo 1)
-MEMORY_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 1024)
+MEMORY_MB=$(free -m | awk '/^Mem:/{print $2}' || echo 1024)
 
-# Create dynamic payload
 PAYLOAD=$(cat <<EOF
 {
   "serverId": "${serverId}",
   "token": "agent-token",
-  "cpu": \${CPU_CORES},
-  "memory": \${MEMORY_MB}
+  "cpu": $CPU_CORES,
+  "memory": $MEMORY_MB
 }
 EOF
 )
 
-RESPONSE=$(curl -s -X POST ${apiUrl}/servers/register-agent \\
+echo "Sending payload:"
+echo "$PAYLOAD"
+
+RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST ${apiUrl}/servers/register-agent \\
   -H "Content-Type: application/json" \\
-  -w "%{http_code}" \\
-  -d "\$PAYLOAD")
+  -d "$PAYLOAD")
 
-HTTP_CODE=$(echo "\$RESPONSE" | tr -d '\n' | sed -e 's/.*\\([0-9]\\{3\\}\\)$/\\1/')
+HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 
-if [ "\$HTTP_CODE" -eq 200 ] || [ "\$HTTP_CODE" -eq 201 ]; then
+echo "Server response code: $HTTP_CODE"
+
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     echo ""
     echo "============================================="
-    echo "  Bootstrap completed successfully! ✓"
-    echo "  Your VPS is now connected to VPSHub."
-    echo "  Detected CPU: \${CPU_CORES} cores, Mem: \${MEMORY_MB} MB"
+    echo " Bootstrap completed successfully! ✓"
+    echo " Traefik Proxy initialized"
+    echo " CPU: $CPU_CORES cores"
+    echo " Memory: $MEMORY_MB MB"
     echo "============================================="
 else
-    echo "Failed to register agent. HTTP Status: \$HTTP_CODE"
+    echo "Registration failed"
+    echo "Response body:"
+    echo "$HTTP_BODY"
     exit 1
 fi
 `;
   }
-
   async getServerStats(userId: string, serverId: string) {
     const server = await this.findOne(userId, serverId);
 
@@ -509,7 +556,55 @@ EOF
     }
   }
 
-  public executeSshCommand(server: any, command: string): Promise<string> {
+  public async uploadFileContent(
+    server: any,
+    remotePath: string,
+    content: string,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const conn = new Client();
+      conn
+        .on('ready', () => {
+          conn.sftp((err, sftp) => {
+            if (err) {
+              conn.end();
+              return reject(err);
+            }
+            const stream = sftp.createWriteStream(remotePath);
+            stream.on('close', () => {
+              conn.end();
+              resolve();
+            });
+            stream.on('error', (err) => {
+              conn.end();
+              reject(err);
+            });
+            stream.write(content);
+            stream.end();
+          });
+        })
+        .on('error', (err) => {
+          reject(err);
+        });
+      const config: any = {
+        host: server.ip.trim(),
+        port: server.sshPort || 22,
+        username: server.sshUser,
+        readyTimeout: 20000,
+      };
+
+      if (server.sshPassword) config.password = server.sshPassword;
+      if (server.sshKey) config.privateKey = server.sshKey;
+
+      conn.connect(config);
+    });
+  }
+
+  public executeSshCommand(
+    server: any,
+    command: string,
+    onData?: (chunk: string) => void,
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       const conn = new Client();
       let output = '';
@@ -522,17 +617,31 @@ EOF
               return reject(err);
             }
 
-            stream
-              .on('close', (code, signal) => {
-                conn.end();
-                resolve(output);
-              })
-              .on('data', (data) => {
-                output += data.toString();
-              })
-              .stderr.on('data', (data) => {
-                output += data.toString();
-              });
+            stream.on('data', (data) => {
+              const chunk = data.toString();
+              output += chunk;
+
+              if (onData) onData(chunk);
+            });
+
+            stream.stderr.on('data', (data) => {
+              const chunk = data.toString();
+              output += chunk;
+
+              if (onData) onData(chunk);
+            });
+
+            stream.on('close', (code) => {
+              conn.end();
+              if (code !== 0) {
+                const error = new Error(
+                  `Command failed with exit code ${code}`,
+                );
+                (error as any).output = output;
+                return reject(error);
+              }
+              resolve(output);
+            });
           });
         })
         .on('error', (err) => {
@@ -551,5 +660,101 @@ EOF
 
       conn.connect(config);
     });
+  }
+
+  public async executeSshScript(
+    server: any,
+    scriptContent: string,
+    onData?: (chunk: string) => void,
+  ): Promise<string> {
+    const timestamp = Date.now();
+    const remotePath = `/tmp/vpshub-deploy-${timestamp}.sh`;
+
+    try {
+      if (onData) onData(`Uploading deployment script to ${remotePath}...\n`);
+      await this.uploadFileContent(server, remotePath, scriptContent);
+
+      if (onData) onData(`Setting execution permissions...\n`);
+      await this.executeSshCommand(server, `chmod +x ${remotePath}`);
+
+      if (onData) onData(`Executing script...\n`);
+      const output = await this.executeSshCommand(server, remotePath, onData);
+
+      // Cleanup
+      await this.executeSshCommand(server, `rm -f ${remotePath}`);
+
+      return output;
+    } catch (error) {
+      // Attempt cleanup even on failure
+      try {
+        await this.executeSshCommand(server, `rm -f ${remotePath}`);
+      } catch (e) {
+        // ignore cleanup error
+      }
+      throw error;
+    }
+  }
+
+  async getPm2Processes(userId: string, serverId: string) {
+    const server = await this.findOne(userId, serverId);
+
+    if (server.connectionStatus !== 'CONNECTED') {
+      throw new BadRequestException('Server is not connected yet');
+    }
+
+    const command = 'pm2 jlist';
+    try {
+      const output = await this.executeSshCommand(server, command);
+      if (!output.trim()) return [];
+
+      try {
+        return JSON.parse(output);
+      } catch (e) {
+        // PM2 might not be installed or output might be malformed
+        console.error('Failed to parse PM2 output:', output);
+        return [];
+      }
+    } catch (error) {
+      console.error('Failed to get PM2 processes:', error);
+      return [];
+    }
+  }
+
+  async handlePm2Action(
+    userId: string,
+    serverId: string,
+    nameOrId: string,
+    action: string,
+  ) {
+    const server = await this.findOne(userId, serverId);
+
+    if (server.connectionStatus !== 'CONNECTED') {
+      throw new BadRequestException('Server is not connected yet');
+    }
+
+    const validActions = ['start', 'stop', 'restart', 'delete'];
+    if (!validActions.includes(action)) {
+      throw new BadRequestException('Invalid PM2 action');
+    }
+
+    const command = `pm2 ${action} ${nameOrId}`;
+    try {
+      const output = await this.executeSshCommand(server, command);
+
+      await this.prisma.activity.create({
+        data: {
+          type: `pm2_${action}`,
+          message: `PM2 ${action} requested for process ${nameOrId} on ${server.name}`,
+          userId,
+          serverId: server.id,
+        },
+      });
+
+      return { output };
+    } catch (error) {
+      throw new BadRequestException(
+        `Failed to ${action} PM2 process: ${error.message}`,
+      );
+    }
   }
 }

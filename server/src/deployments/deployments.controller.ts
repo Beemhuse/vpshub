@@ -5,6 +5,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   Req,
 } from '@nestjs/common';
@@ -28,8 +29,8 @@ export class DeploymentsController {
 
   @Get()
   @ApiOperation({ summary: 'List all deployments' })
-  findAll(@Req() req) {
-    return this.deploymentsService.findAll(req.user.id);
+  findAll(@Req() req, @Query('serverId') serverId?: string) {
+    return this.deploymentsService.findAll(req.user.id, serverId);
   }
 
   @Get(':id')
