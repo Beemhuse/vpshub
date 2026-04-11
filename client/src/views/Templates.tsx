@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useTemplates, useDeploymentMutations } from "../hooks/useApi";
-import { DeployTemplateModal } from "../components/DeployTemplateModal";
+import { DeployModal } from "../components/DeployModal";
 
 interface TemplatesProps {
   onDeployClick: () => void;
@@ -170,7 +170,7 @@ export function Templates({ onDeployClick, serverId }: TemplatesProps) {
           </p>
         </div>
       )}
-      <DeployTemplateModal
+      <DeployModal
         isOpen={isDeployModalOpen}
         onClose={() => setIsDeployModalOpen(false)}
         onSuccess={onDeployClick}

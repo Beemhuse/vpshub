@@ -26,6 +26,17 @@ function deleteCookie(name: string) {
   document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
 }
 
+function clearAntlerSession() {
+  deleteCookie("antler_session_id");
+  deleteCookie("x-antler-session");
+
+  try {
+    localStorage.removeItem("antler_session_id");
+  } catch {
+    // Ignore storage failures during logout.
+  }
+}
+
 function getCookie(name: string) {
   return document.cookie.split('; ').reduce((r, v) => {
     const parts = v.split('=');
@@ -44,6 +55,7 @@ export const useAuthStore = create<AuthState>()(
         set({ user, access_token: token, isAuthenticated: true });
       },
       logout: () => {
+        clearAntlerSession();
         deleteCookie('access_token');
         set({ user: null, access_token: null, isAuthenticated: false });
       },

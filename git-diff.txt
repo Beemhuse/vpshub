@@ -1,0 +1,216 @@
+﻿diff --git a/server/src/deployments/deployment-scripts.service.ts b/server/src/deployments/deployment-scripts.service.ts
+index a2febbb..7381de3 100644
+--- a/server/src/deployments/deployment-scripts.service.ts
++++ b/server/src/deployments/deployment-scripts.service.ts
+@@ -13,13 +13,15 @@ export class DeploymentScriptsService {
+     dto?: CreateDeploymentDto,
+     project?: Project | null,
+   ): string {
++    const repositoryUrl = dto?.repositoryUrl || project?.repositoryUrl;
+     const imageName =
+-      dto?.dockerImage ||
+-      project?.dockerImage ||
+-      (template as any)?.image ||
+-      'nginx:alpine';
++      repositoryUrl 
++        ? `vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-img-${deploymentId.slice(0, 5)}`
++        : (dto?.dockerImage || project?.dockerImage || (template as any)?.image || 'nginx:alpine');
++    
+     const containerName = `vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${deploymentId.slice(0, 5)}`;
+     const port = (template as any)?.defaultPort || 80;
++    const hostPort = 8000 + (parseInt(deploymentId.slice(0, 4), 16) % 1000);
+ 
+     const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+ 
+@@ -31,13 +33,31 @@ export class DeploymentScriptsService {
+       });
+     }
+ 
+-    return `
++    let dockerBuildStep = `
+ echo "[1/5] Pulling Docker image ${imageName}..."
+ sudo docker pull ${imageName} || { echo "Failed to pull image"; exit 1; }
++`;
++
++    if (repositoryUrl) {
++      const appDir = `/opt/vpshub-apps/${sanitized}-${deploymentId.slice(0, 8)}`;
++      dockerBuildStep = `
++echo "[0/5] Cloning repository and building Docker image..."
++sudo mkdir -p ${appDir}
++sudo rm -rf ${appDir}/* 2>/dev/null || true
++sudo git clone ${repositoryUrl} ${appDir} || { echo "Git clone failed"; exit 1; }
++cd ${appDir}
++
++echo "Building Docker image ${imageName}..."
++sudo docker build -t ${imageName} . || { echo "Docker build failed"; exit 1; }
++`;
++    }
++
++    return `
++${dockerBuildStep.trim()}
+ 
+ echo "[2/5] Starting container ${containerName}..."
+ sudo docker rm -f ${containerName} 2>/dev/null || true
+-CONTAINER_ID=$(sudo docker run -d --name ${containerName} --restart always -p 127.0.0.1:8080:${port}${envFlags} ${imageName}) || { echo "Failed to start container"; exit 1; }
++CONTAINER_ID=$(sudo docker run -d --name ${containerName} --restart always -p 127.0.0.1:${hostPort}:${port}${envFlags} ${imageName}) || { echo "Failed to start container"; exit 1; }
+ 
+ echo "[3/5] Ensuring Nginx is installed..."
+ if ! command -v nginx >/dev/null 2>&1; then
+@@ -60,15 +80,15 @@ fi
+ echo "[4/5] Configuring Nginx reverse proxy for ${domain}..."
+ sudo mkdir -p /etc/nginx/sites-available
+  # remove stale nginx configs for same project (keep current)
+-sudo ls /etc/nginx/sites-available 2>/dev/null | grep "vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}" | grep -v "vpshub-${deploymentId}" | xargs -r sudo rm -f || true
+-sudo ls /etc/nginx/sites-enabled 2>/dev/null | grep "vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}" | grep -v "vpshub-${deploymentId}" | xargs -r sudo rm -f || true
++sudo find /etc/nginx/sites-available/ -maxdepth 1 -name "vpshub-${sanitized}-*" ! -name "vpshub-${sanitized}-${deploymentId}" -exec rm -f {} + 2>/dev/null || true
++sudo find /etc/nginx/sites-enabled/ -maxdepth 1 -name "vpshub-${sanitized}-*" ! -name "vpshub-${sanitized}-${deploymentId}" -exec rm -f {} + 2>/dev/null || true
+ sudo cat <<EOF > /etc/nginx/sites-available/vpshub-${sanitized}-${deploymentId}
+ server {
+     listen 80;
+     server_name ${domain};
+ 
+     location / {
+-        proxy_pass http://127.0.0.1:8080;
++        proxy_pass http://127.0.0.1:${hostPort};
+         proxy_set_header Host \\$host;
+         proxy_set_header X-Real-IP \\$remote_addr;
+         proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;
+@@ -132,8 +152,8 @@ fi
+ 
+ echo "[3/5] Configuring Nginx for static site at ${domain}..."
+  # remove stale nginx configs for same project (keep current)
+-sudo ls /etc/nginx/sites-available 2>/dev/null | grep "vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}" | grep -v "vpshub-${deploymentId}" | xargs -r sudo rm -f || true
+-sudo ls /etc/nginx/sites-enabled 2>/dev/null | grep "vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}" | grep -v "vpshub-${deploymentId}" | xargs -r sudo rm -f || true
++sudo find /etc/nginx/sites-available/ -maxdepth 1 -name "vpshub-${sanitized}-*" ! -name "vpshub-${sanitized}-${deploymentId}" -exec rm -f {} + 2>/dev/null || true
++sudo find /etc/nginx/sites-enabled/ -maxdepth 1 -name "vpshub-${sanitized}-*" ! -name "vpshub-${sanitized}-${deploymentId}" -exec rm -f {} + 2>/dev/null || true
+ sudo cat <<EOF > /etc/nginx/sites-available/vpshub-${sanitized}-${deploymentId}
+ server {
+     listen 80;
+@@ -385,8 +405,8 @@ if ! sudo ss -tuln | grep -q ":$PORT"; then
+ fi
+ 
+ echo "[6/8] Cleaning old nginx configs..."
+-sudo ls /etc/nginx/sites-available 2>/dev/null | grep "vpshub-${sanitized}-" | grep -v "vpshub-${sanitized}-${deploymentId}" | xargs -r sudo rm -f || true
+-sudo ls /etc/nginx/sites-enabled 2>/dev/null | grep "vpshub-${sanitized}-" | grep -v "vpshub-${sanitized}-${deploymentId}" | xargs -r sudo rm -f || true
++sudo find /etc/nginx/sites-available/ -maxdepth 1 -name "vpshub-${sanitized}-*" ! -name "vpshub-${sanitized}-${deploymentId}" -exec rm -f {} + 2>/dev/null || true
++sudo find /etc/nginx/sites-enabled/ -maxdepth 1 -name "vpshub-${sanitized}-*" ! -name "vpshub-${sanitized}-${deploymentId}" -exec rm -f {} + 2>/dev/null || true
+ 
+ echo "[7/8] Configuring Nginx reverse proxy for ${domain}..."
+ 
+@@ -433,6 +453,19 @@ echo "Deployment successful!"
+     }
+     return `
+ echo "[${stepNum}/${stepNum}] Provisioning SSL via Certbot..."
++if ! command -v certbot >/dev/null 2>&1; then
++  echo "Certbot not found. Installing..."
++  if command -v apt-get >/dev/null 2>&1; then
++    sudo apt-get update -y -qq
++    sudo apt-get install -y -qq certbot python3-certbot-nginx
++  elif command -v yum >/dev/null 2>&1; then
++    sudo yum install -y epel-release
++    sudo yum install -y certbot python3-certbot-nginx
++  else
++    echo "Unsupported package manager. Please install certbot manually."
++  fi
++fi
++
+ sudo certbot --nginx -d ${domain} --non-interactive --agree-tos -m admin@vpshub.link || echo "Certbot failed, falling back to HTTP"
+ `;
+   }
+@@ -460,23 +493,32 @@ sudo certbot --nginx -d ${domain} --non-interactive --agree-tos -m admin@vpshub.
+     const appDirPrefix = `/var/www/vpshub-apps/${sanitized}-`;
+ 
+     let pm2Cleanup = '';
++    let dockerCleanup = '';
+     let nginxCleanup = '';
+     let dirCleanup = '';
+ 
+     deploymentIds.forEach((id) => {
+       const pm2Name = `vpshub-${sanitized}-${id.slice(0, 5)}`;
++      const containerName = `vpshub-${sanitized}-${id.slice(0, 5)}`;
++      const imageName = `vpshub-${sanitized}-img-${id.slice(0, 5)}`;
++
+       pm2Cleanup += `pm2 delete "${pm2Name}" 2>/dev/null || true\n`;
++      dockerCleanup += `sudo docker rm -f "${containerName}" 2>/dev/null || true\n`;
++      dockerCleanup += `sudo docker rmi -f "${imageName}" 2>/dev/null || true\n`;
++
+       nginxCleanup += `sudo rm -f /etc/nginx/sites-available/vpshub-${sanitized}-${id}\n`;
+       nginxCleanup += `sudo rm -f /etc/nginx/sites-enabled/vpshub-${sanitized}-${id}\n`;
+       dirCleanup += `sudo rm -rf "${appDirPrefix}${id.slice(0, 8)}"\n`;
++      dirCleanup += `sudo rm -rf "/opt/vpshub-apps/${sanitized}-${id.slice(0, 8)}"\n`;
+     });
+ 
+     return `
+ echo "Starting cleanup for project ${projectName}..."
+ 
+-echo "[1/3] Stopping PM2 processes..."
++echo "[1/3] Stopping PM2 processes and Docker containers..."
+ ${pm2Cleanup}
+ pm2 save || true
++${dockerCleanup}
+ 
+ echo "[2/3] Removing Nginx configurations..."
+ ${nginxCleanup}
+diff --git a/server/src/deployments/deployments.controller.ts b/server/src/deployments/deployments.controller.ts
+index 461fd78..58434b9 100644
+--- a/server/src/deployments/deployments.controller.ts
++++ b/server/src/deployments/deployments.controller.ts
+@@ -5,6 +5,7 @@ import {
+   Delete,
+   Body,
+   Param,
++  Query,
+   UseGuards,
+   Req,
+ } from '@nestjs/common';
+@@ -28,8 +29,8 @@ export class DeploymentsController {
+ 
+   @Get()
+   @ApiOperation({ summary: 'List all deployments' })
+-  findAll(@Req() req) {
+-    return this.deploymentsService.findAll(req.user.id);
++  findAll(@Req() req, @Query('serverId') serverId?: string) {
++    return this.deploymentsService.findAll(req.user.id, serverId);
+   }
+ 
+   @Get(':id')
+diff --git a/server/src/deployments/deployments.service.ts b/server/src/deployments/deployments.service.ts
+index 1761343..52a1a58 100644
+--- a/server/src/deployments/deployments.service.ts
++++ b/server/src/deployments/deployments.service.ts
+@@ -301,9 +301,12 @@ export class DeploymentsService implements OnModuleInit {
+     }
+   }
+ 
+-  async findAll(userId: string) {
++  async findAll(userId: string, serverId?: string) {
+     return this.prisma.deployment.findMany({
+-      where: { server: { userId } },
++      where: {
++        server: { userId },
++        ...(serverId ? { serverId } : {}),
++      },
+       include: { server: true },
+       orderBy: { createdAt: 'desc' },
+     });
+diff --git a/server/src/projects/projects.controller.ts b/server/src/projects/projects.controller.ts
+index 4227970..8a539a4 100644
+--- a/server/src/projects/projects.controller.ts
++++ b/server/src/projects/projects.controller.ts
+@@ -6,6 +6,7 @@ import {
+   Delete,
+   Body,
+   Param,
++  Query,
+   UseGuards,
+   Req,
+ } from '@nestjs/common';
+@@ -29,7 +30,7 @@ export class ProjectsController {
+ 
+   @Get()
+   @ApiOperation({ summary: 'List projects' })
+-  findAll(@Req() req, @Param('serverId') serverId?: string) {
++  findAll(@Req() req, @Query('serverId') serverId?: string) {
+     return this.projectsService.findAll(req.user.id, serverId);
+   }
+ 

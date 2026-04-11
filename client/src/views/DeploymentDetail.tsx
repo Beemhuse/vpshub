@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Terminal,
@@ -13,7 +13,12 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useDeployment, useDeploymentMutations } from "../hooks/useApi";
+import {
+  useDeployment,
+  useDeploymentDockerLogs,
+  useDeploymentDockerServices,
+  useDeploymentMutations,
+} from "../hooks/useApi";
 import { toast } from "sonner";
 
 interface DeploymentDetailProps {
@@ -26,14 +31,37 @@ export function DeploymentDetail({
   onBack,
 }: DeploymentDetailProps) {
   const { data: deployment, isLoading } = useDeployment(deploymentId);
+  const [selectedService, setSelectedService] = useState<string | null>(null);
   const { deleteDeployment, isDeleting } = useDeploymentMutations();
+  const isDockerDeployment = deployment?.project?.type === "docker";
+  const { data: dockerServices, isLoading: isLoadingDockerServices } =
+    useDeploymentDockerServices(isDockerDeployment ? deploymentId : "");
+  const { data: dockerLogs, isLoading: isLoadingDockerLogs } =
+    useDeploymentDockerLogs(
+      isDockerDeployment ? deploymentId : "",
+      selectedService || undefined,
+      250,
+    );
   const logEndRef = useRef<HTMLDivElement>(null);
+  const dockerLogEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (logEndRef.current) {
       logEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [deployment?.logs]);
+
+  useEffect(() => {
+    if (!selectedService && dockerServices?.length) {
+      setSelectedService(dockerServices[0].service);
+    }
+  }, [dockerServices, selectedService]);
+
+  useEffect(() => {
+    if (dockerLogEndRef.current) {
+      dockerLogEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [dockerLogs?.logs]);
 
   if (isLoading) {
     return (
@@ -162,7 +190,13 @@ export function DeploymentDetail({
               </span>
             </div>
             <p className="font-medium text-foreground truncate">
-              {deployment.domain ? (
+              {isDockerDeployment ? (
+                dockerServices?.length ? (
+                  `${dockerServices.length} service route${dockerServices.length === 1 ? "" : "s"}`
+                ) : (
+                  "Per-service routing"
+                )
+              ) : deployment.domain ? (
                 <a
                   href={`http://${deployment.domain}`}
                   target="_blank"
@@ -176,7 +210,9 @@ export function DeploymentDetail({
                 "Not configured"
               )}
             </p>
-            <p className="text-xs text-muted-foreground mt-1">HTTP / HTTPS</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {isDockerDeployment ? "Managed per Docker service" : "HTTP / HTTPS"}
+            </p>
           </div>
           <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/10">
             <div className="flex items-center gap-3 mb-2 text-muted-foreground">
@@ -194,6 +230,133 @@ export function DeploymentDetail({
             </p>
           </div>
         </div>
+
+        {isDockerDeployment && (
+          <div className="col-span-12 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Server className="w-4 h-4 text-violet" />
+                <h3 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+                  Docker Services
+                </h3>
+              </div>
+              {isLoadingDockerServices && (
+                <span className="text-[10px] uppercase tracking-wider text-violet">
+                  Refreshing
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-12 gap-4">
+              <div className="col-span-4 space-y-3">
+                {(dockerServices || []).map((service: any) => (
+                  <button
+                    key={service.name}
+                    onClick={() => setSelectedService(service.service)}
+                    className={cn(
+                      "w-full rounded-2xl border p-4 text-left transition-all",
+                      selectedService === service.service
+                        ? "border-violet/40 bg-violet/10"
+                        : "border-white/10 bg-white/[0.03] hover:border-white/20",
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-medium text-foreground">
+                          {service.service}
+                        </p>
+                        <p className="text-xs text-muted-foreground font-mono mt-1 break-all">
+                          {service.name}
+                        </p>
+                      </div>
+                      <span
+                        className={cn(
+                          "px-2 py-0.5 rounded-full text-[10px] font-medium border uppercase",
+                          service.isRunning
+                            ? "text-success bg-success/20 border-success/30"
+                            : "text-destructive bg-destructive/20 border-destructive/30",
+                        )}
+                      >
+                        {service.isRunning ? "up" : "down"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-3">
+                      {service.image}
+                    </p>
+                    {service.ports && service.ports !== 'N/A' && (
+                      <p className="text-[10px] font-mono text-violet/80 mt-1 bg-violet/5 px-1.5 py-0.5 rounded border border-violet/10 inline-block">
+                        {service.ports}
+                      </p>
+                    )}
+                    {service.domain ? (
+                      <p className="mt-2 inline-flex items-center gap-1 text-xs text-violet break-all">
+                        {service.domain}
+                        <ExternalLink className="w-3 h-3" />
+                      </p>
+                    ) : null}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {service.status}
+                    </p>
+                  </button>
+                ))}
+
+                {!isLoadingDockerServices && (!dockerServices || dockerServices.length === 0) && (
+                  <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-sm text-muted-foreground">
+                    No Docker services found for this deployment.
+                  </div>
+                )}
+              </div>
+
+              <div className="col-span-8 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-sm font-medium text-foreground">
+                      {selectedService ? `${selectedService} Logs` : "Service Logs"}
+                    </h4>
+                    <p className="text-xs text-muted-foreground">
+                      Live tail of the selected deployed Docker service
+                    </p>
+                  </div>
+                </div>
+
+                <div className="aspect-[21/9] rounded-2xl bg-black/40 border border-white/10 backdrop-blur-xl p-6 font-mono text-sm overflow-auto custom-scrollbar">
+                  {isLoadingDockerLogs ? (
+                    <div className="h-full flex items-center justify-center text-muted-foreground">
+                      <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                      Loading container logs...
+                    </div>
+                  ) : dockerLogs?.logs ? (
+                    <div className="space-y-1">
+                      {dockerLogs.logs.split("\n").map((log: string, i: number) => (
+                        <div
+                          key={i}
+                          className={cn(
+                            "flex gap-4",
+                            /error|failed|exception/i.test(log)
+                              ? "text-destructive"
+                              : /listening|ready|started|up/i.test(log)
+                                ? "text-success"
+                                : "text-muted-foreground",
+                          )}
+                        >
+                          <span className="text-white/20 select-none w-8 text-right shrink-0">
+                            {i + 1}
+                          </span>
+                          <span className="break-all">{log}</span>
+                        </div>
+                      ))}
+                      <div ref={dockerLogEndRef} />
+                    </div>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-muted-foreground">
+                      Select a service to inspect its logs.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Console Logs */}
         <div className="col-span-12 space-y-4">

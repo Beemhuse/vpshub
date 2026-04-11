@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../services/api";
 import { useAuthStore } from "../store/authStore";
+import { loginWithAntlerSdk } from "../lib/antler";
 
 export const useAuth = () => {
   const { setAuth, logout: storeLogout } = useAuthStore();
@@ -25,6 +26,13 @@ export const useAuth = () => {
     },
   });
 
+  const antlerMutation = useMutation({
+    mutationFn: loginWithAntlerSdk,
+    onSuccess: (data) => {
+      setAuth(data.user, data.access_token);
+    },
+  });
+
   const logout = () => {
     storeLogout();
   };
@@ -32,8 +40,10 @@ export const useAuth = () => {
   return {
     login: loginMutation.mutateAsync,
     signup: signupMutation.mutateAsync,
+    loginWithAntler: antlerMutation.mutateAsync,
     isLoggingIn: loginMutation.isPending,
     isSigningUp: signupMutation.isPending,
+    isAuthenticatingWithAntler: antlerMutation.isPending,
     logout,
   };
 };
@@ -252,6 +262,7 @@ export const useProjectMutations = () => {
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       queryClient.invalidateQueries({ queryKey: ["projects", id] });
+      queryClient.invalidateQueries({ queryKey: ["deployments"] });
     },
   });
 
@@ -286,6 +297,43 @@ export const useDeployment = (id: string) => {
   });
 };
 
+export const useDeploymentDockerServices = (deploymentId: string) => {
+  return useQuery({
+    queryKey: ["deployments", deploymentId, "docker-services"],
+    queryFn: async () => {
+      const { data } = await api.get(
+        `/deployments/${deploymentId}/docker-services`,
+      );
+      return data;
+    },
+    enabled: !!deploymentId,
+    refetchInterval: 10000,
+  });
+};
+
+export const useDeploymentDockerLogs = (
+  deploymentId: string,
+  serviceName?: string,
+  tail: number = 200,
+) => {
+  return useQuery({
+    queryKey: ["deployments", deploymentId, "docker-services", serviceName, "logs", tail],
+    queryFn: async () => {
+      const { data } = await api.get(
+        `/deployments/${deploymentId}/docker-services/${encodeURIComponent(
+          serviceName || "",
+        )}/logs`,
+        {
+          params: { tail },
+        },
+      );
+      return data;
+    },
+    enabled: !!deploymentId && !!serviceName,
+    refetchInterval: 5000,
+  });
+};
+
 export const useDeploymentMutations = () => {
   const queryClient = useQueryClient();
 
@@ -313,11 +361,24 @@ export const useDeploymentMutations = () => {
     },
   });
 
+  const restartMutation = useMutation({
+    mutationFn: async ({ deploymentId, serviceName }: { deploymentId: string; serviceName: string }) => {
+      const { data } = await api.post(`/deployments/${deploymentId}/docker-services/${encodeURIComponent(serviceName)}/restart`);
+      return data;
+    },
+    onSuccess: (_, { deploymentId }) => {
+      queryClient.invalidateQueries({ queryKey: ["deployments", deploymentId] });
+      queryClient.invalidateQueries({ queryKey: ["deployments"] });
+    },
+  });
+
   return {
     createDeployment: createMutation.mutateAsync,
     deleteDeployment: deleteMutation.mutateAsync,
     isCreating: createMutation.isPending,
     isDeleting: deleteMutation.isPending,
+    restartService: restartMutation.mutateAsync,
+    isRestarting: restartMutation.isPending,
   };
 };
 

@@ -9,6 +9,7 @@ import { GoogleStrategy } from './strategies/google.strategy';
 import { GithubController } from './github.controller';
 import { GithubService } from './github.service';
 import { PrismaModule } from '../prisma/prisma.module';
+import { AntlerGuard } from './guards/antler-guard';
 
 @Module({
   imports: [
@@ -23,7 +24,13 @@ import { PrismaModule } from '../prisma/prisma.module';
     }),
   ],
   controllers: [AuthController, GithubController],
-  providers: [AuthService, JwtStrategy, GoogleStrategy, GithubService],
-  exports: [AuthService, JwtModule],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    GoogleStrategy,
+    GithubService,
+    AntlerGuard,
+  ],
+  exports: [AuthService, JwtModule, AntlerGuard],
 })
 export class AuthModule {}

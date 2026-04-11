@@ -11,16 +11,25 @@ import {
   CardFooter,
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { LogIn, Github, Mail, ShieldAlert } from "lucide-react";
+import { Fingerprint, Github, LogIn, Mail, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
+import { isAntlerSupported } from "@/lib/antler";
 
 export const Login: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const antlerAvailable = isAntlerSupported();
 
-  const { login, signup, isLoggingIn, isSigningUp } = useAuth();
+  const {
+    login,
+    signup,
+    loginWithAntler,
+    isLoggingIn,
+    isSigningUp,
+    isAuthenticatingWithAntler,
+  } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,6 +49,21 @@ export const Login: React.FC = () => {
   const handleGoogleLogin = () => {
     window.location.href = "http://localhost:3000/auth/google";
   };
+
+  const handleAntlerLogin = async () => {
+    try {
+      await loginWithAntler();
+      toast.success("Access granted with Antler");
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data?.message ||
+          error?.message ||
+          "Antler authentication failed",
+      );
+    }
+  };
+
+  const isBusy = isLoggingIn || isSigningUp || isAuthenticatingWithAntler;
 
   return (
     <div className="min-h-screen bg-dark flex items-center justify-center p-4 grain-overlay">
@@ -111,7 +135,7 @@ export const Login: React.FC = () => {
               <Button
                 type="submit"
                 className="w-full bg-violet hover:bg-violet/90 text-white shadow-lg shadow-violet/20 h-10 transition-all active:scale-[0.98]"
-                disabled={isLoggingIn || isSigningUp}
+                disabled={isBusy}
               >
                 {isLoggingIn || isSigningUp ? (
                   <div className="flex items-center gap-2">
@@ -126,6 +150,33 @@ export const Login: React.FC = () => {
                 )}
               </Button>
             </form>
+
+            <div className="mt-4 space-y-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10 transition-colors"
+                disabled={!antlerAvailable || isBusy}
+                onClick={handleAntlerLogin}
+              >
+                {isAuthenticatingWithAntler ? (
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                    <span>Verifying presence...</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <Fingerprint className="w-4 h-4" />
+                    <span>Get Access with Antler</span>
+                  </div>
+                )}
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                {antlerAvailable
+                  ? "Use your device biometrics or security key to create an Antler session and exchange it for dashboard access."
+                  : "Antler needs WebAuthn in a secure context such as https or localhost on a supported browser."}
+              </p>
+            </div>
 
             <div className="relative my-6">
               <div className="absolute inset-0 flex items-center">

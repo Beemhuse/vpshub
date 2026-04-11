@@ -218,9 +218,9 @@ function App() {
       </div>
 
       <DeployModal
-        open={deployModalOpen}
+        isOpen={deployModalOpen}
         onClose={() => setDeployModalOpen(false)}
-        serverId={selectedServer?.id}
+        serverId={selectedServer?.id || ""}
       />
 
       <Toaster />

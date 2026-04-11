@@ -58,6 +58,7 @@ model Project {
   name          String
   description   String?
   domain        String?
+  serviceDomains Json?
   type          String   @default("static") // static, docker
   repositoryUrl String?
   dockerImage   String?
@@ -83,6 +84,7 @@ model Deployment {
   projectId     String?
   project       Project? @relation(fields: [projectId], references: [id])
   domain        String?
+  serviceDomains Json?
   templateId    String?
   repositoryUrl String?
   rootDir       String?

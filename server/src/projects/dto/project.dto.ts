@@ -34,4 +34,11 @@ export class CreateProjectDto {
   @IsNotEmpty()
   @IsString()
   serverId: string;
+
+  @ApiProperty({
+    example: { frontend: 'app.example.com', admin_server: 'api.example.com' },
+    required: false,
+  })
+  @IsOptional()
+  serviceDomains?: Record<string, string>;
 }

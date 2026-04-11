@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useProjects } from "../hooks/useApi";
 import { CreateProjectModal } from "../components/CreateProjectModal";
-import { DeployTemplateModal } from "../components/DeployTemplateModal";
+import { DeployModal } from "../components/DeployModal";
 
 interface ProjectsProps {
   serverId: string;
@@ -232,7 +232,7 @@ export function Projects({ serverId, onProjectClick }: ProjectsProps) {
         serverId={serverId}
       />
 
-      <DeployTemplateModal
+      <DeployModal
         isOpen={isDeployModalOpen}
         onClose={() => setIsDeployModalOpen(false)}
         project={selectedProject}

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ServersService } from '../servers/servers.service';
 import { DeploymentScriptsService } from '../deployments/deployment-scripts.service';
+import { DeploymentsService } from '../deployments/deployments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProjectDto } from './dto/project.dto';
 
@@ -10,6 +11,7 @@ export class ProjectsService {
     private prisma: PrismaService,
     private serversService: ServersService,
     private deploymentScripts: DeploymentScriptsService,
+    private deploymentsService: DeploymentsService,
   ) {}
 
   async create(userId: string, dto: CreateProjectDto) {
@@ -40,7 +42,7 @@ export class ProjectsService {
   async findOne(userId: string, id: string) {
     const project = await this.prisma.project.findUnique({
       where: { id },
-      include: { deployments: true },
+      include: { deployments: { orderBy: { createdAt: 'desc' } } },
     });
 
     if (!project || project.userId !== userId) {
@@ -51,7 +53,34 @@ export class ProjectsService {
   }
 
   async update(userId: string, id: string, dto: any) {
-    await this.findOne(userId, id);
+    const project = await this.findOne(userId, id);
+    const latestDeployment = project.deployments?.[0];
+    const shouldApplyDockerConfig =
+      project.type === 'docker' &&
+      !!latestDeployment &&
+      [
+        'domain',
+        'env',
+        'rootDir',
+        'buildCmd',
+        'repositoryUrl',
+        'exposedPort',
+        'dockerImage',
+        'serviceDomains',
+      ].some((key) => Object.prototype.hasOwnProperty.call(dto, key));
+
+    if (shouldApplyDockerConfig) {
+      await this.deploymentsService.reconfigureDockerDeployment(
+        userId,
+        latestDeployment.id,
+        {
+          ...project,
+          ...dto,
+          env: dto.env ?? project.env ?? undefined,
+        },
+      );
+    }
+
     return this.prisma.project.update({
       where: { id },
       data: dto,

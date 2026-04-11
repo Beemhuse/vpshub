@@ -64,4 +64,11 @@ export class CreateDeploymentDto {
   @ApiProperty({ example: { NODE_ENV: 'production' }, required: false })
   @IsOptional()
   env?: Record<string, string>;
+
+  @ApiProperty({
+    example: { frontend: 'app.example.com', admin_server: 'api.example.com' },
+    required: false,
+  })
+  @IsOptional()
+  serviceDomains?: Record<string, string>;
 }

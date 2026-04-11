@@ -21,9 +21,10 @@ Static deployments are designed for modern frontend frameworks (React, Vue, Vite
 
 ### 3. Web Server (Nginx)
 
-- A new Nginx configuration is created in `/etc/nginx/sites-available`.
+- A deployment-specific Nginx configuration is created in `/etc/nginx/sites-available`.
 - It includes a `try_files $uri $uri/ /index.html` rule to support Single Page Applications (SPA) routing.
-- The configuration is symlinked to `sites-enabled` and Nginx is reloaded.
+- That site listens on an internal port, while the global Nginx edge proxy continues to own public `80/443`.
+- Traefik routes the public hostname to that internal Nginx site.
 
 ---
 
@@ -56,7 +57,9 @@ The system automatically ensures the following are installed:
 
 ### 4. Reverse Proxy (Nginx)
 
-- Nginx acts as a reverse proxy, forwarding traffic from port 80 (or 443) to the internal PM2 port.
+- A deployment-specific Nginx site listens on an internal port and forwards traffic to the PM2 app port.
+- The global Nginx edge proxy keeps public `80/443` and passes requests through to Traefik on loopback `8080/8443`.
+- Traefik then routes the hostname to the deployment-specific Nginx site.
 - Headers are preserved (`X-Real-IP`, `X-Forwarded-For`, etc.) to ensure the Node.js app can identify client IPs.
 
 ---
@@ -66,8 +69,8 @@ The system automatically ensures the following are installed:
 For both types of deployments:
 
 - **Nip.io**: Default subdomains use `project.ip.nip.io`.
-- **Custom Domains**: If a custom domain is attached, VPSHub automatically provisions an SSL certificate using **Certbot** (Let's Encrypt).
-- **Automatic Renewal**: Certbot is configured to handle certificate renewals automatically on the VPS.
+- **Custom Domains**: If a custom domain is attached, Traefik provisions the SSL certificate using Let's Encrypt.
+- **Automatic Renewal**: Traefik renews certificates automatically using `/etc/vpshub/traefik/acme/acme.json`.
 
 ---
 

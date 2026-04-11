@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -12,12 +13,30 @@ import {
   RegisterAgentDto,
 } from './dto/server.dto';
 import { Client } from 'ssh2';
+import {
+  VPSHUB_TRAEFIK_CONTAINER_NAME,
+  VPSHUB_TRAEFIK_HTTP_PORT,
+  VPSHUB_TRAEFIK_HTTPS_PORT,
+} from '../common/proxy.constants';
 
 @Injectable()
 export class ServersService {
   constructor(private prisma: PrismaService) {}
 
+  private async ensureUserExists(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Session is no longer valid');
+    }
+  }
+
   async create(userId: string, dto: CreateServerDto) {
+    await this.ensureUserExists(userId);
+
     const server = await this.prisma.server.create({
       data: {
         ...dto,
@@ -91,6 +110,8 @@ export class ServersService {
   }
 
   async connect(userId: string, dto: ConnectServerDto) {
+    await this.ensureUserExists(userId);
+
     const trimmedIp = dto.ip.trim();
     const existingServer = await this.prisma.server.findFirst({
       where: { ip: trimmedIp, userId },
@@ -200,7 +221,9 @@ export class ServersService {
   }
 
   private getBootstrapCommand(serverId: string) {
-    const apiUrl = 'https://8898-105-113-10-15.ngrok-free.app';
+    const apiUrl = process.env.API_URL || 'http://localhost:3800';
+    const traefikHttpPort = VPSHUB_TRAEFIK_HTTP_PORT;
+    const traefikHttpsPort = VPSHUB_TRAEFIK_HTTPS_PORT;
     console.log(`Using API URL: ${apiUrl}`);
     return `#!/bin/bash
 set -e
@@ -235,32 +258,48 @@ if ! docker compose version &> /dev/null; then
     sudo apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1 || true
 fi
 
-# 3. Setup Traefik as Global Proxy
-echo "[3/4] Setting up Traefik Reverse Proxy..."
-if ! sudo docker ps -a | grep -q "vpshub-traefik"; then
-    echo "Configuring Traefik..."
-    # Stop Nginx if it's already running on 80 to prevent conflict
-    if command -v systemctl >/dev/null 2>&1 && sudo systemctl is-active --quiet nginx; then
-       echo "Temporarily stopping Nginx to avoid port 80 conflict..."
-       sudo systemctl stop nginx || true
-    fi
-    sudo docker network create vpshub-proxy 2>/dev/null || true
-    
-    # Create directory for Let's Encrypt certificates and dynamic config
-    sudo mkdir -p /etc/vpshub/traefik/acme
-    sudo mkdir -p /etc/vpshub/traefik/dynamic
-    sudo touch /etc/vpshub/traefik/acme/acme.json
-    sudo chmod 600 /etc/vpshub/traefik/acme/acme.json
+# 3. Setup Traefik router
+echo "[3/4] Ensuring Traefik is running..."
+TRAEFIK_HTTP_PORT=${traefikHttpPort}
+TRAEFIK_HTTPS_PORT=${traefikHttpsPort}
 
+sudo docker network create vpshub-proxy 2>/dev/null || true
+
+sudo docker network create vpshub-proxy 2>/dev/null || true
+sudo mkdir -p /etc/vpshub/traefik/acme
+sudo mkdir -p /etc/vpshub/traefik/dynamic
+sudo touch /etc/vpshub/traefik/acme/acme.json
+sudo chmod 600 /etc/vpshub/traefik/acme/acme.json
+
+TRAEFIK_RECREATE=false
+if sudo docker ps -a --format '{{.Names}}' | grep -qx "${VPSHUB_TRAEFIK_CONTAINER_NAME}"; then
+    TRAEFIK_PORTS=$(sudo docker port "${VPSHUB_TRAEFIK_CONTAINER_NAME}" 2>/dev/null || true)
+    if ! echo "$TRAEFIK_PORTS" | grep -q "^80/tcp -> 127.0.0.1:$TRAEFIK_HTTP_PORT$"; then
+        TRAEFIK_RECREATE=true
+    fi
+    if ! echo "$TRAEFIK_PORTS" | grep -q "^443/tcp -> 127.0.0.1:$TRAEFIK_HTTPS_PORT$"; then
+        TRAEFIK_RECREATE=true
+    fi
+    if [ "$TRAEFIK_RECREATE" = "true" ]; then
+        echo "Recreating Traefik on dedicated loopback ports..."
+        sudo docker rm -f "${VPSHUB_TRAEFIK_CONTAINER_NAME}" >/dev/null 2>&1 || true
+    else
+        sudo docker start "${VPSHUB_TRAEFIK_CONTAINER_NAME}" >/dev/null 2>&1 || true
+    fi
+fi
+
+if ! sudo docker ps -a --format '{{.Names}}' | grep -qx "${VPSHUB_TRAEFIK_CONTAINER_NAME}"; then
+    echo "Starting Traefik..."
     sudo docker run -d \
-      --name vpshub-traefik \
+      --name ${VPSHUB_TRAEFIK_CONTAINER_NAME} \
       --restart always \
       --network vpshub-proxy \
-      -p 80:80 \
-      -p 443:443 \
+      -p 127.0.0.1:$TRAEFIK_HTTP_PORT:80 \
+      -p 127.0.0.1:$TRAEFIK_HTTPS_PORT:443 \
       -v /var/run/docker.sock:/var/run/docker.sock:ro \
       -v /etc/vpshub/traefik/acme/acme.json:/letsencrypt/acme.json \
       -v /etc/vpshub/traefik/dynamic:/etc/traefik/dynamic \
+      -e DOCKER_API_VERSION=1.40 \
       traefik:v2.10 \
       --providers.docker=true \
       --providers.docker.exposedbydefault=false \
@@ -271,7 +310,7 @@ if ! sudo docker ps -a | grep -q "vpshub-traefik"; then
       --certificatesresolvers.letsencrypt.acme.httpchallenge=true \
       --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web \
       --certificatesresolvers.letsencrypt.acme.email=admin@vpshub.link \
-      --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json >/dev/null
 else
     echo "Traefik already running"
 fi
@@ -308,7 +347,7 @@ if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     echo ""
     echo "============================================="
     echo " Bootstrap completed successfully! ✓"
-    echo " Traefik Proxy initialized"
+    echo " Traefik listening on 127.0.0.1:${traefikHttpPort} and 127.0.0.1:${traefikHttpsPort}"
     echo " CPU: $CPU_CORES cores"
     echo " Memory: $MEMORY_MB MB"
     echo "============================================="
@@ -425,6 +464,8 @@ EOF
         '22': 'SSH',
         '80': 'HTTP (Nginx)',
         '443': 'HTTPS (Nginx)',
+        '8282': 'Traefik HTTP (loopback)',
+        '8443': 'Traefik HTTPS (loopback)',
         '5432': 'PostgreSQL',
         '6379': 'Redis',
         '3000': 'API Hub',
