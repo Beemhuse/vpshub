@@ -55,8 +55,7 @@ export class ProjectsService {
   async update(userId: string, id: string, dto: any) {
     const project = await this.findOne(userId, id);
     const latestDeployment = project.deployments?.[0];
-    const shouldApplyDockerConfig =
-      project.type === 'docker' &&
+    const shouldReconfigure =
       !!latestDeployment &&
       [
         'domain',
@@ -69,8 +68,8 @@ export class ProjectsService {
         'serviceDomains',
       ].some((key) => Object.prototype.hasOwnProperty.call(dto, key));
 
-    if (shouldApplyDockerConfig) {
-      await this.deploymentsService.reconfigureDockerDeployment(
+    if (shouldReconfigure) {
+      await this.deploymentsService.reconfigureDeployment(
         userId,
         latestDeployment.id,
         {

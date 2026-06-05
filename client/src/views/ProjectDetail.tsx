@@ -159,28 +159,18 @@ export function ProjectDetail({
           name: form.name.trim(),
           description: form.description.trim() || undefined,
           repositoryUrl: form.repositoryUrl.trim() || undefined,
-          ...(isDockerProject
-            ? {
-                domain:
-                  form.domain.trim() ||
-                  project.domain ||
-                  latestDeployment?.domain ||
-                  undefined,
-                rootDir: form.rootDir.trim() || undefined,
-                exposedPort: form.exposedPort
-                  ? Number(form.exposedPort)
-                  : undefined,
-                env: formattedEnv,
-                serviceDomains: formattedServiceDomains,
-              }
-            : {}),
+          domain:
+            form.domain.trim() ||
+            project.domain ||
+            latestDeployment?.domain ||
+            undefined,
+          rootDir: form.rootDir.trim() || undefined,
+          exposedPort: form.exposedPort ? Number(form.exposedPort) : undefined,
+          env: formattedEnv,
+          serviceDomains: isDockerProject ? formattedServiceDomains : undefined,
         },
       });
-      toast.success(
-        isDockerProject
-          ? "Project settings saved and running Docker deployment updated"
-          : "Project settings saved",
-      );
+      toast.success("Settings saved and reconfiguration triggered on server");
     } catch (error) {
       toast.error(
         isDockerProject
@@ -685,17 +675,21 @@ export function ProjectDetail({
                     />
                   </div>
 
-                  {isDockerProject && (
-                    <>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted-foreground px-1">Base Domain</label>
-                        <Input
-                          value={form.domain}
-                          onChange={(e) => setForm((prev) => ({ ...prev, domain: e.target.value }))}
-                          className="bg-white/5 border-white/10 text-foreground"
-                        />
-                      </div>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground px-1">Base Domain</label>
+                      <Input
+                        value={form.domain}
+                        onChange={(e) => setForm((prev) => ({ ...prev, domain: e.target.value }))}
+                        placeholder="e.g. app.yourdomain.com"
+                        className="bg-white/5 border-white/10 text-foreground"
+                      />
+                      <p className="text-[10px] text-muted-foreground px-1">
+                        Changing this will automatically re-provision SSL certificates.
+                      </p>
+                    </div>
 
+                    {isDockerProject && (
                       <div className="pt-2">
                         <div className="flex items-center justify-between mb-2">
                           <h4 className="text-sm font-medium text-foreground">Service Domains</h4>
@@ -730,58 +724,67 @@ export function ProjectDetail({
                           </div>
                         )}
                       </div>
+                    )}
 
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium text-muted-foreground px-1">Root Directory</label>
-                          <Input
-                            value={form.rootDir}
-                            onChange={(e) => setForm((prev) => ({ ...prev, rootDir: e.target.value }))}
-                            className="bg-white/5 border-white/10 text-foreground"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium text-muted-foreground px-1">Exposed Port</label>
-                          <Input
-                            type="number"
-                            value={form.exposedPort}
-                            onChange={(e) => setForm((prev) => ({ ...prev, exposedPort: e.target.value }))}
-                            className="bg-white/5 border-white/10 text-foreground"
-                          />
-                        </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground px-1">Root Directory</label>
+                        <Input
+                          value={form.rootDir}
+                          onChange={(e) => setForm((prev) => ({ ...prev, rootDir: e.target.value }))}
+                          placeholder="/"
+                          className="bg-white/5 border-white/10 text-foreground"
+                        />
                       </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground px-1">Exposed Port</label>
+                        <Input
+                          type="number"
+                          value={form.exposedPort}
+                          onChange={(e) => setForm((prev) => ({ ...prev, exposedPort: e.target.value }))}
+                          placeholder={isDockerProject ? "80" : "3000"}
+                          className="bg-white/5 border-white/10 text-foreground"
+                        />
+                      </div>
+                    </div>
 
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
+                    <div className="space-y-3 pt-2">
+                      <div className="flex items-center justify-between">
+                        <div>
                           <h4 className="text-sm font-medium text-foreground">Environment Variables</h4>
-                          <Button type="button" variant="outline" size="sm" onClick={addEnvVar} className="border-white/10 bg-white/5">
-                            <Plus className="w-4 h-4 mr-2" /> Add Variable
-                          </Button>
+                          {project.type === 'static' && (
+                            <p className="text-[10px] text-warning mt-1">
+                              Note: Static projects require a full redeploy for env changes to take effect.
+                            </p>
+                          )}
                         </div>
-                        <div className="space-y-2">
-                          {envVars.map((envVar, index) => (
-                            <div key={index} className="flex gap-2">
-                              <Input
-                                value={envVar.key}
-                                onChange={(e) => updateEnvVar(index, "key", e.target.value)}
-                                placeholder="KEY"
-                                className="bg-white/5 border-white/10 text-foreground"
-                              />
-                              <Input
-                                value={envVar.value}
-                                onChange={(e) => updateEnvVar(index, "value", e.target.value)}
-                                placeholder="VALUE"
-                                className="bg-white/5 border-white/10 text-foreground"
-                              />
-                              <Button type="button" variant="ghost" size="icon" onClick={() => removeEnvVar(index)}>
-                                <X className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
+                        <Button type="button" variant="outline" size="sm" onClick={addEnvVar} className="border-white/10 bg-white/5">
+                          <Plus className="w-4 h-4 mr-2" /> Add Variable
+                        </Button>
                       </div>
-                    </>
-                  )}
+                      <div className="space-y-2">
+                        {envVars.map((envVar, index) => (
+                          <div key={index} className="flex gap-2">
+                            <Input
+                              value={envVar.key}
+                              onChange={(e) => updateEnvVar(index, "key", e.target.value)}
+                              placeholder="KEY"
+                              className="bg-white/5 border-white/10 text-foreground"
+                            />
+                            <Input
+                              value={envVar.value}
+                              onChange={(e) => updateEnvVar(index, "value", e.target.value)}
+                              placeholder="VALUE"
+                              className="bg-white/5 border-white/10 text-foreground"
+                            />
+                            <Button type="button" variant="ghost" size="icon" onClick={() => removeEnvVar(index)}>
+                              <X className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 

@@ -4,59 +4,287 @@ import { Template, Project } from '@prisma/client';
 import {
   VPSHUB_TRAEFIK_CONTAINER_NAME,
   VPSHUB_TRAEFIK_HTTP_PORT,
-  VPSHUB_TRAEFIK_HTTPS_PORT,
 } from '../common/proxy.constants';
 
 @Injectable()
 export class DeploymentScriptsService {
   getDockerComposeProjectName(
     projectName: string,
-    deploymentId: string,
+    // deploymentId: string,
   ): string {
     return projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
   }
 
-  getDockerContainerName(projectName: string, deploymentId: string): string {
+  getDockerContainerName(projectName: string): string {
     const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
     return `${sanitized}-app`;
   }
 
-  getDockerAppDir(projectName: string, deploymentId: string): string {
+  getDockerAppDir(projectName: string): string {
     const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
     return `/opt/vpshub/apps/${sanitized}`;
+  }
+
+  private normalizeDomains(
+    primaryDomain: string,
+    domains?: string[],
+  ): string[] {
+    const candidates = [primaryDomain, ...(domains || [])]
+      .map((domain) => (typeof domain === 'string' ? domain.trim() : ''))
+      .filter(Boolean)
+      .map((domain) => domain.toLowerCase());
+
+    return Array.from(new Set(candidates));
+  }
+
+  private buildTraefikHostRule(domains: string[]): string {
+    return domains.map((domain) => `Host(\`${domain}\`)`).join(' || ');
+  }
+
+  private generateNginxHttpOnlyBlock(
+    primaryDomain: string,
+    domains: string[],
+  ): string {
+    const allDomains = this.normalizeDomains(primaryDomain, domains).join(' ');
+    return `
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${allDomains};
+
+    # Essential for Let's Encrypt HTTP-01 challenge
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    # Proxy everything else to Traefik
+    location / {
+        proxy_pass http://127.0.0.1:8282;
+        proxy_set_header Host \\$host;
+        proxy_set_header X-Real-IP \\$remote_addr;
+        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \\$scheme;
+    }
+}
+`.trim();
+  }
+
+  private generateNginxServerBlock(
+    primaryDomain: string,
+    domains: string[],
+  ): string {
+    const allDomains = this.normalizeDomains(primaryDomain, domains).join(' ');
+    return `
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${allDomains};
+
+    # Redirect all HTTP traffic to HTTPS
+    location / {
+        return 301 https://\\$host\\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${allDomains};
+
+    ssl_certificate /etc/letsencrypt/live/${primaryDomain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${primaryDomain}/privkey.pem;
+
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    location / {
+        proxy_pass http://127.0.0.1:8282;
+        proxy_set_header Host \\$host;
+        proxy_set_header X-Real-IP \\$remote_addr;
+        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \\$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+`.trim();
+  }
+
+  private getApplyNginxConfigScript(
+    projectName: string,
+    primaryDomain: string,
+    domains: string[],
+    nginxConfig: string,
+  ): string {
+    const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const configFile = `/etc/nginx/sites-available/vpshub-${sanitized}.conf`;
+    const linkFile = `/etc/nginx/sites-enabled/vpshub-${sanitized}.conf`;
+    const allDomainsList = this.normalizeDomains(primaryDomain, domains);
+    const certbotDomains = allDomainsList.map((d) => `-d ${d}`).join(' ');
+    const httpOnlyConfig = this.generateNginxHttpOnlyBlock(
+      primaryDomain,
+      domains,
+    );
+
+    return `
+CERT_PATH="/etc/letsencrypt/live/${primaryDomain}/fullchain.pem"
+
+if [ ! -f "$CERT_PATH" ]; then
+  log "SSL certificate missing for ${primaryDomain}. Starting automated provisioning..."
+  
+  log "Stage 1: Applying temporary HTTP-only configuration..."
+  sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+  sudo mkdir -p /var/www/html
+  sudo tee ${configFile} > /dev/null <<EOF
+${httpOnlyConfig}
+EOF
+  sudo ln -sf ${configFile} ${linkFile}
+  sudo nginx -t && sudo systemctl reload nginx || { log "ERROR: Temporary HTTP Nginx config failed"; exit 1; }
+
+  log "Stage 2: Requesting certificate from Let's Encrypt..."
+  sudo certbot certonly --nginx ${certbotDomains} --non-interactive --agree-tos -m admin@vpshub.link --quiet || { log "ERROR: Certbot failed to obtain certificate"; exit 1; }
+  
+  if [ ! -f "$CERT_PATH" ]; then
+    log "ERROR: Certificate still missing after Certbot run."
+    exit 1
+  fi
+  log "SUCCESS: Certificate obtained for ${primaryDomain}."
+fi
+
+log "Stage 3: Applying final HTTPS configuration..."
+sudo tee ${configFile} > /dev/null <<EOF
+${nginxConfig}
+EOF
+sudo ln -sf ${configFile} ${linkFile}
+if sudo nginx -t; then
+  sudo systemctl reload nginx
+  log "SUCCESS: Nginx configuration reloaded with SSL."
+else
+  log "ERROR: Final Nginx configuration test failed. Check logs."
+  exit 1
+fi
+`.trim();
+  }
+
+  private generateStaticAppNginxConfig(): string {
+    return `
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files \\$uri \\$uri/ /index.html;
+    }
+}
+`.trim();
+  }
+
+  private buildDockerRunTraefikLabels(
+    routerName: string,
+    primaryDomain: string,
+    servicePort: string | number,
+    domains?: string[],
+  ): string {
+    const normalizedDomains = this.normalizeDomains(primaryDomain, domains);
+    const hostRule = this.buildTraefikHostRule(normalizedDomains);
+    const labels = [
+      'traefik.enable=true',
+      `traefik.http.routers.${routerName}.rule=${hostRule}`,
+      `traefik.http.routers.${routerName}.entrypoints=web`,
+      `traefik.http.routers.${routerName}.service=${routerName}`,
+      `traefik.http.services.${routerName}.loadbalancer.server.port=${servicePort}`,
+    ];
+    return labels.map((label) => ` --label '${label}'`).join('');
+  }
+
+  private buildComposeTraefikLabels(
+    routerName: string,
+    primaryDomain: string,
+    servicePort: string | number,
+    domains?: string[],
+  ): string {
+    const normalizedDomains = this.normalizeDomains(primaryDomain, domains);
+    const hostRule = this.buildTraefikHostRule(normalizedDomains);
+    const labels = [
+      `traefik.enable=true`,
+      `traefik.http.routers.${routerName}.rule=${hostRule}`,
+      `traefik.http.routers.${routerName}.entrypoints=web`,
+      `traefik.http.routers.${routerName}.service=${routerName}`,
+      `traefik.http.services.${routerName}.loadbalancer.server.port=${servicePort}`,
+    ];
+
+    return labels
+      .map(
+        (label) =>
+          `      - "${label
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/`/g, '\\`')}"`,
+      )
+      .join('\n');
   }
 
   private getEnsureProxyInfrastructureScript(): string {
     return `
 ensure_vpshub_proxy_infrastructure() {
   TRAEFIK_HTTP_PORT=${VPSHUB_TRAEFIK_HTTP_PORT}
-  TRAEFIK_HTTPS_PORT=${VPSHUB_TRAEFIK_HTTPS_PORT}
   TRAEFIK_CONTAINER_NAME="${VPSHUB_TRAEFIK_CONTAINER_NAME}"
-
-  # Check if Traefik is already correct
-  if sudo docker ps --format '{{.Names}}' | grep -qx "$TRAEFIK_CONTAINER_NAME" && \
-     [ "$(sudo docker inspect -f '{{.State.Running}}' "$TRAEFIK_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
-    return 0
-  fi
-
-  log "Ensuring shared proxy infrastructure (Traefik)..."
+  log "Ensuring shared proxy infrastructure (Traefik on loopback port $TRAEFIK_HTTP_PORT)..."
 
   sudo docker network create vpshub-proxy 2>/dev/null || true
-  sudo mkdir -p /etc/vpshub/traefik/acme
   sudo mkdir -p /etc/vpshub/traefik/dynamic
-  sudo touch /etc/vpshub/traefik/acme/acme.json
-  sudo chmod 600 /etc/vpshub/traefik/acme/acme.json
+
+  TRAEFIK_RECREATE=false
+  if sudo docker ps -a --format '{{.Names}}' | grep -qx "$TRAEFIK_CONTAINER_NAME"; then
+    TRAEFIK_PORTS=$(sudo docker port "$TRAEFIK_CONTAINER_NAME" 2>/dev/null || true)
+    if ! echo "$TRAEFIK_PORTS" | grep -q "^80/tcp -> 127.0.0.1:$TRAEFIK_HTTP_PORT$"; then
+      TRAEFIK_RECREATE=true
+    fi
+
+    if [ "$TRAEFIK_RECREATE" = "true" ]; then
+      log "Recreating Traefik on dedicated loopback port..."
+      sudo docker rm -f "$TRAEFIK_CONTAINER_NAME" >/dev/null 2>&1 || true
+      sleep 2
+    else
+      sudo docker start "$TRAEFIK_CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if sudo ss -ltn '( sport = :'$TRAEFIK_HTTP_PORT' )' 2>/dev/null | grep -q LISTEN && \\
+     ! sudo docker ps -a --format '{{.Names}}' | grep -qx "$TRAEFIK_CONTAINER_NAME"; then
+    log "Port $TRAEFIK_HTTP_PORT is already in use:"
+    sudo ss -ltnp '( sport = :'$TRAEFIK_HTTP_PORT' )' 2>/dev/null || true
+    exit 1
+  fi
+
+  # Ensure Nginx is installed
+  if ! command -v nginx &> /dev/null; then
+    log "Installing Nginx..."
+    if command -v apt-get &> /dev/null; then
+      sudo apt-get update -y -qq >/dev/null 2>&1
+      sudo apt-get install -y -qq nginx >/dev/null 2>&1
+    elif command -v yum &> /dev/null; then
+      sudo yum install -y -q nginx >/dev/null 2>&1
+    fi
+  fi
 
   if ! sudo docker ps -a --format '{{.Names}}' | grep -qx "$TRAEFIK_CONTAINER_NAME"; then
-    log "Starting Traefik on loopback ports $TRAEFIK_HTTP_PORT/$TRAEFIK_HTTPS_PORT..."
+    log "Starting Traefik on loopback port $TRAEFIK_HTTP_PORT..."
     sudo docker run -d \\
       --name "$TRAEFIK_CONTAINER_NAME" \\
       --restart always \\
       --network vpshub-proxy \\
       -p 127.0.0.1:$TRAEFIK_HTTP_PORT:80 \\
-      -p 127.0.0.1:$TRAEFIK_HTTPS_PORT:443 \\
       -v /var/run/docker.sock:/var/run/docker.sock:ro \\
-      -v /etc/vpshub/traefik/acme/acme.json:/letsencrypt/acme.json \\
       -v /etc/vpshub/traefik/dynamic:/etc/traefik/dynamic \\
       -e DOCKER_API_VERSION=1.40 \\
       traefik:v2.10 \\
@@ -65,13 +293,15 @@ ensure_vpshub_proxy_infrastructure() {
       --providers.file.directory=/etc/traefik/dynamic \\
       --providers.file.watch=true \\
       --entrypoints.web.address=:80 \\
-      --entrypoints.websecure.address=:443 \\
-      --certificatesresolvers.letsencrypt.acme.httpchallenge=true \\
-      --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web \\
-      --certificatesresolvers.letsencrypt.acme.email=admin@vpshub.link \\
-      --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json >/dev/null || { log "Failed to start Traefik"; exit 1; }
+      --entrypoints.web.forwardedHeaders.trustedIPs=127.0.0.1 >/dev/null || { log "Failed to start Traefik"; exit 1; }
   else
     sudo docker start "$TRAEFIK_CONTAINER_NAME" >/dev/null 2>&1 || true
+  fi
+
+  if [ "$(sudo docker inspect -f '{{.State.Running}}' "$TRAEFIK_CONTAINER_NAME" 2>/dev/null || echo false)" != "true" ]; then
+    log "Traefik is not running after startup."
+    sudo docker logs --tail 100 "$TRAEFIK_CONTAINER_NAME" 2>&1 || true
+    exit 1
   fi
 }
 `;
@@ -99,7 +329,7 @@ ensure_vpshub_proxy_infrastructure() {
 
     const fallback = baseDomain?.trim()
       ? `echo "$1.${escapeShellValue(baseDomain.trim())}"`
-      : `echo "$1-${this.getDockerComposeProjectName(projectName, deploymentId)}.local"`;
+      : `echo "$1-${this.getDockerComposeProjectName(projectName)}.local"`;
 
     const cases = entries
       .map(
@@ -122,6 +352,7 @@ ${cases ? `${cases}\n` : ''}    *) ${fallback} ;;
     deploymentId: string,
     template: Template | null,
     domain: string,
+    domains: string[],
     isCustomDomain: boolean,
     dto?: CreateDeploymentDto,
     project?: Project | null,
@@ -131,25 +362,21 @@ ${cases ? `${cases}\n` : ''}    *) ${fallback} ;;
       ? `vpshub-${projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-img-${deploymentId.slice(0, 5)}`
       : dto?.dockerImage ||
         project?.dockerImage ||
-        (template as any)?.image ||
+        (template as Template)?.image ||
         'nginx:alpine';
 
-    const containerName = this.getDockerContainerName(
-      projectName,
-      deploymentId,
-    );
+    const containerName = this.getDockerContainerName(projectName);
     const port =
       dto?.exposedPort ||
-      (project as any)?.exposedPort ||
-      (template as any)?.defaultPort ||
+      (project as Project)?.exposedPort ||
+      (template as Template)?.defaultPort ||
       80;
-    const hostPort = 8000 + (parseInt(deploymentId.slice(0, 4), 16) % 1000);
 
     const rootDir = this.sanitizeRootDir(
-      dto?.rootDir || (project as any)?.rootDir,
+      dto?.rootDir || (project as Project)?.rootDir,
     );
     const dockerfilePath =
-      dto?.buildCmd || (project as any)?.buildCmd || 'Dockerfile';
+      dto?.buildCmd || (project as Project)?.buildCmd || 'Dockerfile';
 
     const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
 
@@ -167,16 +394,13 @@ ${cases ? `${cases}\n` : ''}    *) ${fallback} ;;
 
     if (domain) {
       const routerName = `${sanitized}-${deploymentId.slice(0, 5)}`;
-
-      traefikLabels += ` --label 'traefik.enable=true'`;
-      traefikLabels += ` --label 'traefik.http.routers.${routerName}.rule=Host(\`${domain}\`)'`;
-
-      // ✅ ALWAYS HTTP (Nginx handles HTTPS)
-      traefikLabels += ` --label 'traefik.http.routers.${routerName}.entrypoints=web'`;
-
-
       const servicePort = port || 80;
-      traefikLabels += ` --label 'traefik.http.services.${routerName}.loadbalancer.server.port=${servicePort}'`;
+      traefikLabels += this.buildDockerRunTraefikLabels(
+        routerName,
+        domain,
+        servicePort,
+        domains,
+      );
     }
     let dockerBuildStep = `
 echo "[1/5] Pulling Docker image ${imageName}..."
@@ -184,7 +408,7 @@ sudo docker pull ${imageName} || { echo "Failed to pull image"; exit 1; }
 `;
 
     if (repositoryUrl) {
-      const appDir = this.getDockerAppDir(projectName, deploymentId);
+      const appDir = this.getDockerAppDir(projectName);
       dockerBuildStep = `
 log "[0/5] Cloning repository and building Docker image..."
 sudo rm -rf ${appDir} 2>/dev/null || true
@@ -247,7 +471,7 @@ if [ -f "docker-compose.yml" ] || [ -f "docker-compose.yaml" ]; then
   if sudo docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD="docker compose"
   fi
-  COMPOSE_PROJECT_NAME="${this.getDockerComposeProjectName(projectName, deploymentId)}"
+  COMPOSE_PROJECT_NAME="${this.getDockerComposeProjectName(projectName)}"
   export COMPOSE_PROJECT_NAME
   log "Using Docker Compose project name: $COMPOSE_PROJECT_NAME"
 
@@ -331,7 +555,7 @@ EOT
        SERVICE_PORT=\${TARGET_PORT:-80}
 
        cat <<EOT >> docker-compose.override.yml
-      - "traefik.http.services.${sanitized}-\${deploymentId:0:5}-$SERVICE.loadbalancer.server.port=\$SERVICE_PORT"
+      - "traefik.http.services.${sanitized}-\${deploymentId:0:5}-$SERVICE.loadbalancer.server.port=\\$SERVICE_PORT"
 EOT
        
        # App depends on all DBs
@@ -501,7 +725,7 @@ else
     ${traefikLabels} \
     ${imageName}) || { log "ERROR: Failed to start container. Check image existence or label syntax."; exit 1; }
     
-  log "SUCCESS: Container started with ID: \$CONTAINER_ID"
+  log "SUCCESS: Container started with ID: \\$CONTAINER_ID"
     
   log "Connecting container to project internal network ${projectNetwork}..."
   sudo docker network connect ${projectNetwork} ${containerName} || true
@@ -515,8 +739,12 @@ else
   fi
 fi
 
-log "--- Docker Deployment Successful ---"
-log "Custom domain: ${domain} (Proxied through Traefik)"
+  log "--- Docker Deployment Successful ---"
+  log "Domains: ${domains.join(', ')} (Routed by host Nginx to Traefik)"
+  
+  ${domain ? this.getApplyNginxConfigScript(projectName, domain, domains, this.generateNginxServerBlock(domain, domains)) : ''}
+  
+  echo "VPSHUB_DEPLOYMENT_SUCCESS"
 `;
   }
 
@@ -526,131 +754,30 @@ log "Custom domain: ${domain} (Proxied through Traefik)"
     template: Template | null,
     repositoryUrl: string,
     domain: string,
+    domains: string[],
     isCustomDomain: boolean,
     appDir: string,
     dto?: CreateDeploymentDto,
   ): string {
-    const outputDir = (template as any)?.outputDir || '.';
-    const installCmd = dto?.installCmd || (template as any)?.installCmd || '';
-    const buildCmd = dto?.buildCmd || (template as any)?.buildCmd || '';
+    const outputDir = (template as Template)?.outputDir || '.';
+    const installCmd =
+      dto?.installCmd || (template as Template)?.installCmd || '';
+    const buildCmd = dto?.buildCmd || (template as Template)?.buildCmd || '';
 
     const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const composeProjectName = this.getDockerComposeProjectName(
-      projectName,
-      deploymentId,
-    );
+    const composeProjectName = this.getDockerComposeProjectName(projectName);
     const containerName = `${sanitized}-static`;
+    const traefikLabelBlock = this.buildComposeTraefikLabels(
+      `${sanitized}-\${deploymentId:0:5}`,
+      domain,
+      80,
+      domains,
+    );
 
     return `
 # Helper for logging
 log() {
   echo "[$(date +'%Y-%m-%d %H:%M:%S')] [STATIC-DEPLOY] $1"
-}
-
-deploymentId="${deploymentId}"
-projectName="${projectName}"
-
-${this.getEnsureProxyInfrastructureScript().trim()}
-
-log "[1/4] Cloning repository..."
-sudo rm -rf ${appDir} 2>/dev/null || true
-sudo mkdir -p ${appDir}
-sudo git clone --depth 1 ${repositoryUrl} ${appDir} || { log "Git clone failed"; exit 1; }
-
-cd ${appDir}
-${installCmd ? `log "Installing dependencies..."; sudo ${installCmd} || { log "Install failed"; exit 1; }` : ''}
-${buildCmd ? `log "Building project..."; sudo ${buildCmd} || { log "Build failed"; exit 1; }` : ''}
-
-log "[2/4] Ensuring shared proxy infrastructure..."
-ensure_vpshub_proxy_infrastructure
-
-log "[3/4] Generating docker-compose.yml for static serving..."
-cat <<EOF > docker-compose.yml
-version: '3.8'
-services:
-  web:
-    image: nginx:alpine
-    container_name: ${containerName}
-    restart: always
-    volumes:
-      - ./${outputDir}:/usr/share/nginx/html:ro
-    networks:
-      - vpshub-proxy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${sanitized}-\${deploymentId:0:5}.rule=Host(\\\`${domain}\\\`)"
-      - "traefik.http.routers.${sanitized}-\${deploymentId:0:5}.entrypoints=web"
-      - "traefik.http.services.${sanitized}-\${deploymentId:0:5}.loadbalancer.server.port=80"
-
-networks:
-  vpshub-proxy:
-    external: true
-EOF
-
-log "[4/4] Starting static serving container..."
-if sudo docker compose version >/dev/null 2>&1; then
-  sudo docker compose -p "${composeProjectName}" up -d --remove-orphans || { log "Docker Compose up failed"; exit 1; }
-else
-  sudo docker-compose -p "${composeProjectName}" up -d --remove-orphans || { log "Docker Compose up failed"; exit 1; }
-fi
-
-log "Static deployment successful!"
-log "Custom domain: ${domain} (Proxied by Traefik to Nginx Container)"
-`;
-  }
-
-  generateNodeDeployScript(
-    projectName: string,
-    deploymentId: string,
-    template: Template | null,
-    repositoryUrl: string,
-    domain: string,
-    isCustomDomain: boolean,
-    appDir: string,
-    sshUser: string,
-    dto?: CreateDeploymentDto,
-  ): string {
-    const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const composeProjectName = this.getDockerComposeProjectName(
-      projectName,
-      deploymentId,
-    );
-    const containerName = `${sanitized}-node`;
-
-    const templatePort = (template as any)?.defaultPort || 3000;
-    const basePort = templatePort >= 1024 ? templatePort : 3000;
-    const port = basePort + (parseInt(deploymentId.slice(0, 4), 16) % 1000);
-
-    const rootDir = this.sanitizeRootDir(dto?.rootDir);
-
-    const installCmd = (
-      dto?.installCmd ||
-      (template as any)?.installCmd ||
-      'npm install'
-    ).replace(/"/g, '\\"');
-    const buildCmd = (
-      dto?.buildCmd ||
-      (template as any)?.buildCmd ||
-      ''
-    ).replace(/"/g, '\\"');
-    const startCmd = (
-      dto?.startCmd ||
-      (template as any)?.startCmd ||
-      'npm start'
-    ).replace(/"/g, '\\"');
-
-    // Handle environment variables
-    let envFileContent = '';
-    if (dto?.env) {
-      Object.entries(dto.env).forEach(([key, value]) => {
-        envFileContent += `${key}=${String(value || '').replace(/"/g, '\\"')}\\n`;
-      });
-    }
-
-    return `
-# Helper for logging
-log() {
-  echo "[$(date +'%Y-%m-%d %H:%M:%S')] [NODE-DEPLOY] $1"
 }
 
 deploymentId="${deploymentId}"
@@ -664,27 +791,175 @@ sudo mkdir -p ${appDir}
 sudo git clone --depth 1 ${repositoryUrl} ${appDir} || { log "Git clone failed"; exit 1; }
 
 cd ${appDir}
-${rootDir ? `cd ${rootDir}` : ''}
+${installCmd ? `log "Installing dependencies..."; sudo ${installCmd} || { log "Install failed"; exit 1; }` : ''}
+${buildCmd ? `log "Building project..."; sudo ${buildCmd} || { log "Build failed"; exit 1; }` : ''}
 
-log "[2/5] Creating .env file..."
-printf "${envFileContent}" > .env
+log "[2/5] Ensuring shared proxy infrastructure..."
+ensure_vpshub_proxy_infrastructure
 
-log "[3/5] Generating Dockerfile for Node.js serving..."
-cat <<EOF > Dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY . .
-RUN ${installCmd}
-${buildCmd ? `RUN ${buildCmd}` : ''}
-EXPOSE ${port}
-ENV PORT=${port}
-ENV NODE_ENV=production
-CMD ${startCmd.startsWith('npm') ? startCmd : `["sh", "-c", "${startCmd}"]`}
+log "Validating static output directory..."
+if [ ! -d "./${outputDir}" ]; then
+  log "Output directory ${outputDir} was not found."
+  exit 1
+fi
+if [ ! -f "./${outputDir}/index.html" ]; then
+  log "index.html was not found in ${outputDir}."
+  exit 1
+fi
+
+log "[3/5] Generating Nginx config for static serving..."
+sudo tee default.conf > /dev/null <<EOF
+${this.generateStaticAppNginxConfig()}
 EOF
 
-log "[4/5] Generating docker-compose.yml..."
+log "[4/5] Generating docker-compose.yml for static serving..."
 cat <<EOF > docker-compose.yml
-version: '3.8'
+services:
+  web:
+    image: nginx:alpine
+    container_name: ${containerName}
+    restart: always
+    volumes:
+      - ./${outputDir}:/usr/share/nginx/html:ro
+      - ./default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - vpshub-proxy
+    labels:
+${traefikLabelBlock}
+
+networks:
+  vpshub-proxy:
+    external: true
+EOF
+
+log "[5/5] Starting static serving container..."
+if sudo docker compose version >/dev/null 2>&1; then
+  sudo docker compose -p "${composeProjectName}" up -d --remove-orphans || { log "Docker Compose up failed"; exit 1; }
+else
+  sudo docker-compose -p "${composeProjectName}" up -d --remove-orphans || { log "Docker Compose up failed"; exit 1; }
+fi
+
+log "Static deployment successful!"
+log "Domains: ${domains.join(', ')} (Routed by host Nginx to Traefik to static Nginx)"
+
+${domain ? this.getApplyNginxConfigScript(projectName, domain, domains, this.generateNginxServerBlock(domain, domains)) : ''}
+
+echo "VPSHUB_DEPLOYMENT_SUCCESS"
+`;
+  }
+
+  generateNodeDeployScript(
+    projectName: string,
+    deploymentId: string,
+    template: Template | null,
+    repositoryUrl: string,
+    domain: string,
+    domains: string[],
+    isCustomDomain: boolean,
+    appDir: string,
+    sshUser: string,
+    dto?: CreateDeploymentDto,
+  ): string {
+    const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const composeProjectName = this.getDockerComposeProjectName(projectName);
+    const containerName = `${sanitized}-node`;
+
+    const templatePort = (template as Template)?.defaultPort || 3000;
+    const basePort = templatePort >= 1024 ? templatePort : 3000;
+    const port = basePort + (parseInt(deploymentId.slice(0, 4), 16) % 1000);
+
+    const traefikLabelBlock = this.buildComposeTraefikLabels(
+      `${sanitized}-\${deploymentId:0:5}`,
+      domain,
+      port,
+      domains,
+    );
+
+    const rootDir = this.sanitizeRootDir(dto?.rootDir);
+
+    const installCmd = (
+      dto?.installCmd ||
+      (template as Template)?.installCmd ||
+      'npm ci --prefer-offline --no-audit'
+    ).replace(/"/g, '\\"');
+
+    const buildCmd = (
+      dto?.buildCmd ||
+      (template as Template)?.buildCmd ||
+      'npm run build'
+    ).replace(/"/g, '\\"');
+
+    const startCmd = (
+      dto?.startCmd ||
+      (template as Template)?.startCmd ||
+      'npm start'
+    ).replace(/"/g, '\\"');
+
+    let envFileContent = '';
+    if (dto?.env) {
+      Object.entries(dto.env).forEach(([key, value]) => {
+        envFileContent += `${key}=${String(value || '').replace(/"/g, '\\"')}\\n`;
+      });
+    }
+
+    return `
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] [NODE-DEPLOY] $1"
+}
+
+deploymentId="${deploymentId}"
+
+${this.getEnsureProxyInfrastructureScript().trim()}
+
+log "[1/6] Cloning repository..."
+sudo rm -rf ${appDir} 2>/dev/null || true
+sudo mkdir -p ${appDir}
+sudo git clone --depth 1 ${repositoryUrl} ${appDir} || { log "Git clone failed"; exit 1; }
+
+cd ${appDir}
+${rootDir ? `cd ${rootDir}` : ''}
+
+log "[2/6] Creating .env file..."
+printf "${envFileContent}" > .env
+
+log "[3/6] Creating .dockerignore..."
+cat <<EOF > .dockerignore
+node_modules
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+npm-debug.log
+.next/cache
+EOF
+
+log "[4/6] Generating optimized Dockerfile..."
+cat <<EOF > Dockerfile
+# ---- deps (cached) ----
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN ${installCmd}
+
+# ---- builder ----
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN ${buildCmd}
+
+# ---- runner ----
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=${port}
+COPY --from=builder /app ./
+EXPOSE ${port}
+CMD ${startCmd.startsWith('npm') ? `["sh","-c","${startCmd}"]` : startCmd}
+EOF
+
+log "[5/6] Generating docker-compose.yml..."
+cat <<EOF > docker-compose.yml
 services:
   app:
     build: .
@@ -694,27 +969,29 @@ services:
     networks:
       - vpshub-proxy
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${sanitized}-\${deploymentId:0:5}.rule=Host(\\\`${domain}\\\`)"
-      - "traefik.http.routers.${sanitized}-\${deploymentId:0:5}.entrypoints=web"
-      - "traefik.http.services.${sanitized}-\${deploymentId:0:5}.loadbalancer.server.port=${port}"
+${traefikLabelBlock}
 
 networks:
   vpshub-proxy:
     external: true
 EOF
 
-log "[5/5] Building and starting Node.js container..."
+log "[6/6] Building & starting (with cache)..."
 ensure_vpshub_proxy_infrastructure
 
 if sudo docker compose version >/dev/null 2>&1; then
-  sudo docker compose -p "${composeProjectName}" up -d --build --remove-orphans || { log "Docker Compose up failed"; exit 1; }
+  sudo docker compose -p "${composeProjectName}" up -d --build --remove-orphans || { log "Deploy failed"; exit 1; }
 else
-  sudo docker-compose -p "${composeProjectName}" up -d --build --remove-orphans || { log "Docker Compose up failed"; exit 1; }
+  sudo docker-compose -p "${composeProjectName}" up -d --build --remove-orphans || { log "Deploy failed"; exit 1; }
 fi
 
-log "Node.js deployment successful!"
-log "Custom domain: ${domain} (Proxied by Traefik to Node Container)"
+log "🚀 Deployment complete!"
+log "⚡ Optimized with Docker layer caching"
+log "🌍 Domains: ${domains.join(', ')}"
+
+${domain ? this.getApplyNginxConfigScript(projectName, domain, domains, this.generateNginxServerBlock(domain, domains)) : ''}
+
+echo "VPSHUB_DEPLOYMENT_SUCCESS"
 `;
   }
 
@@ -722,24 +999,22 @@ log "Custom domain: ${domain} (Proxied by Traefik to Node Container)"
     projectName: string,
     deploymentId: string,
     domain: string,
+    domains: string[],
     dto?: CreateDeploymentDto,
     project?: Project | null,
   ): string {
     const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const containerName = this.getDockerContainerName(
-      projectName,
-      deploymentId,
-    );
+    const containerName = this.getDockerContainerName(projectName);
     const imageName =
       dto?.repositoryUrl || project?.repositoryUrl
         ? `vpshub-${sanitized}-img-${deploymentId.slice(0, 5)}`
         : dto?.dockerImage || project?.dockerImage || 'nginx:alpine';
-    const port = dto?.exposedPort || (project as any)?.exposedPort || 80;
+    const port = dto?.exposedPort || (project as Project)?.exposedPort || 80;
     const projectNetwork = `vpshub-proj-${sanitized}`;
     const rootDir = this.sanitizeRootDir(
-      dto?.rootDir || (project as any)?.rootDir,
+      dto?.rootDir || (project as Project)?.rootDir,
     );
-    const appDir = this.getDockerAppDir(projectName, deploymentId);
+    const appDir = this.getDockerAppDir(projectName);
 
     let envFlags = '';
     if (dto?.env) {
@@ -750,25 +1025,16 @@ log "Custom domain: ${domain} (Proxied by Traefik to Node Container)"
 
     let traefikLabels = '';
     if (domain) {
-      traefikLabels += ` --label 'traefik.enable=true'`;
-      traefikLabels += ` --label 'traefik.http.routers.${sanitized}-${deploymentId.slice(0, 5)}.rule=Host(\`${domain}\`)'`;
-      const isPublicDomain =
-        domain &&
-        /^[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$/.test(domain) &&
-        !/\\.local$|\\.test$/.test(domain);
-      if (isPublicDomain) {
-        traefikLabels += ` --label 'traefik.http.routers.${sanitized}-${deploymentId.slice(0, 5)}.entrypoints=websecure'`;
-        traefikLabels += ` --label 'traefik.http.routers.${sanitized}-${deploymentId.slice(0, 5)}.tls.certresolver=letsencrypt'`;
-      } else {
-        traefikLabels += ` --label 'traefik.http.routers.${sanitized}-${deploymentId.slice(0, 5)}.entrypoints=web'`;
-      }
-      if (port) {
-        traefikLabels += ` --label 'traefik.http.services.${sanitized}-${deploymentId.slice(0, 5)}.loadbalancer.server.port=${port}'`;
-      }
+      traefikLabels += this.buildDockerRunTraefikLabels(
+        `${sanitized}-${deploymentId.slice(0, 5)}`,
+        domain,
+        port || 80,
+        domains,
+      );
     }
 
     return `
-${this.buildServiceDomainResolver(projectName, deploymentId, domain, (dto?.serviceDomains || (project as any)?.serviceDomains) as any)}
+${this.buildServiceDomainResolver(projectName, deploymentId, domain, (dto?.serviceDomains || (project as Project)?.serviceDomains) as any)}
 
 log() {
   echo "[$(date +'%Y-%m-%d %H:%M:%S')] [DOCKER-DEPLOY] $1"
@@ -829,7 +1095,7 @@ if [ -f "docker-compose.yml" ] || [ -f "docker-compose.yaml" ]; then
   if sudo docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD="docker compose"
   fi
-  COMPOSE_PROJECT_NAME="${this.getDockerComposeProjectName(projectName, deploymentId)}"
+  COMPOSE_PROJECT_NAME="${this.getDockerComposeProjectName(projectName)}"
   export COMPOSE_PROJECT_NAME
   CONFIG_OUTPUT=$(sudo $COMPOSE_CMD config 2>/dev/null)
   SERVICES=$(sudo $COMPOSE_CMD config --services 2>/dev/null)
@@ -925,6 +1191,148 @@ else
 fi
 
 log "Docker deployment configuration applied successfully."
+
+${domain ? this.getApplyNginxConfigScript(projectName, domain, domains, this.generateNginxServerBlock(domain, domains)) : ''}
+
+echo "VPSHUB_DEPLOYMENT_SUCCESS"
+`;
+  }
+
+  generateNodeReconfigureScript(
+    projectName: string,
+    deploymentId: string,
+    domain: string,
+    domains: string[],
+    dto?: CreateDeploymentDto,
+    project?: Project | null,
+  ): string {
+    const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const containerName = `${sanitized}-node`;
+    const composeProjectName = this.getDockerComposeProjectName(projectName);
+    const appDir = this.getDockerAppDir(projectName);
+    const rootDir = this.sanitizeRootDir(dto?.rootDir || project?.rootDir);
+
+    const templatePort = (project as any)?.template?.defaultPort || 3000;
+    const basePort = templatePort >= 1024 ? templatePort : 3000;
+    const port = basePort + (parseInt(deploymentId.slice(0, 4), 16) % 1000);
+
+    const traefikLabelBlock = this.buildComposeTraefikLabels(
+      `${sanitized}-\${deploymentId:0:5}`,
+      domain,
+      port,
+      domains,
+    );
+
+    let envFileContent = '';
+    const mergedEnv = { ...(project?.env as any), ...(dto?.env as any) };
+    Object.entries(mergedEnv).forEach(([key, value]) => {
+      envFileContent += `${key}=${String(value || '').replace(/"/g, '\\"')}\\n`;
+    });
+
+    return `
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] [NODE-RECONFIGURE] $1"
+}
+
+log "--- Reconfiguring Node.js Deployment ---"
+cd ${appDir}
+${rootDir ? `cd ${rootDir}` : ''}
+
+log "Updating .env file..."
+printf "${envFileContent}" > .env
+
+log "Updating docker-compose.yml with new labels/domain..."
+# We need to preserve the service definition but update labels
+# For Node, we just regenerate the docker-compose.yml since it's simple
+cat <<EOF > docker-compose.yml
+services:
+  app:
+    build: .
+    container_name: ${containerName}
+    restart: always
+    env_file: .env
+    networks:
+      - vpshub-proxy
+    labels:
+${traefikLabelBlock}
+
+networks:
+  vpshub-proxy:
+    external: true
+EOF
+
+log "Restarting container..."
+if sudo docker compose version >/dev/null 2>&1; then
+  sudo docker compose -p "${composeProjectName}" up -d --remove-orphans || { log "Docker Compose update failed"; exit 1; }
+else
+  sudo docker-compose -p "${composeProjectName}" up -d --remove-orphans || { log "Docker Compose update failed"; exit 1; }
+fi
+
+${domain ? this.getApplyNginxConfigScript(projectName, domain, domains, this.generateNginxServerBlock(domain, domains)) : ''}
+
+echo "VPSHUB_DEPLOYMENT_SUCCESS"
+`;
+  }
+
+  generateStaticReconfigureScript(
+    projectName: string,
+    deploymentId: string,
+    domain: string,
+    domains: string[],
+    dto?: CreateDeploymentDto,
+    project?: Project | null,
+  ): string {
+    const sanitized = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const containerName = `${sanitized}-static`;
+    const composeProjectName = this.getDockerComposeProjectName(projectName);
+    const appDir = this.getDockerAppDir(projectName);
+    const outputDir = (project as any)?.template?.outputDir || '.';
+
+    const traefikLabelBlock = this.buildComposeTraefikLabels(
+      `${sanitized}-\${deploymentId:0:5}`,
+      domain,
+      80,
+      domains,
+    );
+
+    return `
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] [STATIC-RECONFIGURE] $1"
+}
+
+log "--- Reconfiguring Static Deployment ---"
+cd ${appDir}
+
+log "Updating docker-compose.yml with new labels/domain..."
+cat <<EOF > docker-compose.yml
+services:
+  web:
+    image: nginx:alpine
+    container_name: ${containerName}
+    restart: always
+    volumes:
+      - ./${outputDir}:/usr/share/nginx/html:ro
+      - ./default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - vpshub-proxy
+    labels:
+${traefikLabelBlock}
+
+networks:
+  vpshub-proxy:
+    external: true
+EOF
+
+log "Restarting container..."
+if sudo docker compose version >/dev/null 2>&1; then
+  sudo docker compose -p "${composeProjectName}" up -d --remove-orphans || { log "Docker Compose update failed"; exit 1; }
+else
+  sudo docker-compose -p "${composeProjectName}" up -d --remove-orphans || { log "Docker Compose update failed"; exit 1; }
+fi
+
+${domain ? this.getApplyNginxConfigScript(projectName, domain, domains, this.generateNginxServerBlock(domain, domains)) : ''}
+
+echo "VPSHUB_DEPLOYMENT_SUCCESS"
 `;
   }
 

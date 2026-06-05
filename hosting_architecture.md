@@ -9,21 +9,21 @@ When a user visits a site hosted on VPSHub (e.g., `https://my-app.1.2.3.4.nip.io
 ```mermaid
 graph TD
     User([User Browser]) --> Port80[Port 80/443: Local Nginx]
-    Port80 -- TCP Stream --> Traefik[Traefik Router: Port 8282]
+    Port80 -- Proxy Pass (HTTP) --> Traefik[Traefik Router: Port 8282]
     Traefik -- HTTP Router --> Container[Application Container]
     Traefik <--> DockerSoc[Docker Socket]
 ```
 
-### Layer 1: Nginx (Pre-Configured Edge)
+### Layer 1: Nginx (Managed Edge)
 Nginx acts as the primary "Edge Proxy" on the host machine.
-- **Strict Isolation**: VPSHub **does not** modify, overwrite, or inject configuration into any Nginx files in `/etc/nginx`.
-- **Pre-requisite**: Nginx must be manually configured to proxy traffic for VPSHub domains to `http://127.0.0.1:8282`.
-- **Benefit**: This ensures VPSHub never interferes with existing sites or custom Nginx configurations on the server.
+- **Automated Configuration**: VPSHub automatically generates server blocks for your domains in `/etc/nginx/sites-available`.
+- **SSL Termination**: Nginx handles all SSL/TLS termination using certificates (typically from Let's Encrypt).
+- **Manual Control**: You can still add custom configurations or use Nginx for non-VPSHub sites on the same machine.
 
 ### Layer 2: Traefik (Internal Container Router)
 Traefik is the "Brain" of the internal network, running entirely inside Docker.
-- **Port Mapping**: It binds to loopback ports `127.0.0.1:8282` (HTTP) and `127.0.0.1:8443` (HTTPS). It **does not** bind to port 80 or 443 on the host.
-- **No Host Network**: Traefik uses a standard Docker bridge network (`vpshub-proxy`).
+- **Port Mapping**: It binds to loopback port `127.0.0.1:8282` (HTTP). It **does not** handle SSL publicly.
+- **Header Trust**: Traefik trusts forwarded headers (`X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`) from the local Nginx.
 - **Label-Only Discovery**: Traefik watches the Docker socket and discovers services solely through Docker labels.
 
 ### Layer 3: Application Containers
@@ -60,8 +60,8 @@ As soon as `docker compose up` completes, Traefik detects the new labels and sta
 
 - **Isolation**: Each project has its own Docker network and isolated environment.
 - **Observability**: Services are automatically mapped to ports, and their health is monitored.
-- **Simplicity**: No manual Nginx `.conf` files are needed for new deployments.
-- **SSL by Default**: Custom domains get automatic HTTPS via Traefik's Let's Encrypt integration.
+- **Simplicity**: Nginx and Traefik are configured automatically for new deployments.
+- **SSL by Default**: SSL termination is handled by Nginx at the edge.
 
 ## 4. Port Configuration (Latest Update)
 To avoid conflicts with external services (like Antler Sentinel), Traefik has been moved to a unique internal port mapping:

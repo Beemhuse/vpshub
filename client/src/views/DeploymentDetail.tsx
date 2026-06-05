@@ -101,6 +101,13 @@ export function DeploymentDetail({
 
   const statusStyle =
     statusColors[deployment.status] || "text-muted-foreground bg-white/10";
+  const deploymentProtocol =
+    deployment.domain &&
+    !deployment.domain.endsWith(".local") &&
+    !deployment.domain.endsWith(".test") &&
+    deployment.domain !== "localhost"
+      ? "https"
+      : "http";
 
   return (
     <div className="space-y-6 animate-fade-in pb-20">
@@ -198,7 +205,7 @@ export function DeploymentDetail({
                 )
               ) : deployment.domain ? (
                 <a
-                  href={`http://${deployment.domain}`}
+                  href={`${deploymentProtocol}://${deployment.domain}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="hover:text-violet transition-colors flex items-center gap-1 group"
@@ -226,7 +233,7 @@ export function DeploymentDetail({
             </p>
             <p className="text-xs text-success flex items-center gap-1 mt-1">
               <CheckCircle2 className="w-3 h-3" />
-              Certbot Ready
+              TLS Ready
             </p>
           </div>
         </div>

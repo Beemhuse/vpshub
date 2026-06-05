@@ -16,7 +16,7 @@ import { Client } from 'ssh2';
 import {
   VPSHUB_TRAEFIK_CONTAINER_NAME,
   VPSHUB_TRAEFIK_HTTP_PORT,
-  VPSHUB_TRAEFIK_HTTPS_PORT,
+
 } from '../common/proxy.constants';
 
 @Injectable()
@@ -223,7 +223,7 @@ export class ServersService {
   private getBootstrapCommand(serverId: string) {
     const apiUrl = process.env.API_URL || 'http://localhost:3800';
     const traefikHttpPort = VPSHUB_TRAEFIK_HTTP_PORT;
-    const traefikHttpsPort = VPSHUB_TRAEFIK_HTTPS_PORT;
+    
     console.log(`Using API URL: ${apiUrl}`);
     return `#!/bin/bash
 set -e
@@ -258,18 +258,12 @@ if ! docker compose version &> /dev/null; then
     sudo apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1 || true
 fi
 
-# 3. Setup Traefik router
+# 3. Setup Traefik router (Hybrid Mode)
 echo "[3/4] Ensuring Traefik is running..."
 TRAEFIK_HTTP_PORT=${traefikHttpPort}
-TRAEFIK_HTTPS_PORT=${traefikHttpsPort}
 
 sudo docker network create vpshub-proxy 2>/dev/null || true
-
-sudo docker network create vpshub-proxy 2>/dev/null || true
-sudo mkdir -p /etc/vpshub/traefik/acme
 sudo mkdir -p /etc/vpshub/traefik/dynamic
-sudo touch /etc/vpshub/traefik/acme/acme.json
-sudo chmod 600 /etc/vpshub/traefik/acme/acme.json
 
 TRAEFIK_RECREATE=false
 if sudo docker ps -a --format '{{.Names}}' | grep -qx "${VPSHUB_TRAEFIK_CONTAINER_NAME}"; then
@@ -277,14 +271,30 @@ if sudo docker ps -a --format '{{.Names}}' | grep -qx "${VPSHUB_TRAEFIK_CONTAINE
     if ! echo "$TRAEFIK_PORTS" | grep -q "^80/tcp -> 127.0.0.1:$TRAEFIK_HTTP_PORT$"; then
         TRAEFIK_RECREATE=true
     fi
-    if ! echo "$TRAEFIK_PORTS" | grep -q "^443/tcp -> 127.0.0.1:$TRAEFIK_HTTPS_PORT$"; then
-        TRAEFIK_RECREATE=true
-    fi
     if [ "$TRAEFIK_RECREATE" = "true" ]; then
-        echo "Recreating Traefik on dedicated loopback ports..."
+        echo "Recreating Traefik on dedicated loopback port..."
         sudo docker rm -f "${VPSHUB_TRAEFIK_CONTAINER_NAME}" >/dev/null 2>&1 || true
+        sleep 2
     else
         sudo docker start "${VPSHUB_TRAEFIK_CONTAINER_NAME}" >/dev/null 2>&1 || true
+    fi
+fi
+
+if sudo ss -ltn '( sport = :'$TRAEFIK_HTTP_PORT' )' 2>/dev/null | grep -q LISTEN && \
+   ! sudo docker ps -a --format '{{.Names}}' | grep -qx "${VPSHUB_TRAEFIK_CONTAINER_NAME}"; then
+    echo "Port $TRAEFIK_HTTP_PORT is already in use:"
+    sudo ss -ltnp '( sport = :'$TRAEFIK_HTTP_PORT' )' 2>/dev/null || true
+    exit 1
+fi
+
+# Ensure Nginx and Certbot are installed
+if ! command -v nginx &> /dev/null || ! command -v certbot &> /dev/null; then
+    echo "Installing Nginx and Certbot..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -y -qq >/dev/null 2>&1
+        sudo apt-get install -y -qq nginx certbot python3-certbot-nginx >/dev/null 2>&1
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y -q nginx certbot python3-certbot-nginx >/dev/null 2>&1
     fi
 fi
 
@@ -295,9 +305,7 @@ if ! sudo docker ps -a --format '{{.Names}}' | grep -qx "${VPSHUB_TRAEFIK_CONTAI
       --restart always \
       --network vpshub-proxy \
       -p 127.0.0.1:$TRAEFIK_HTTP_PORT:80 \
-      -p 127.0.0.1:$TRAEFIK_HTTPS_PORT:443 \
       -v /var/run/docker.sock:/var/run/docker.sock:ro \
-      -v /etc/vpshub/traefik/acme/acme.json:/letsencrypt/acme.json \
       -v /etc/vpshub/traefik/dynamic:/etc/traefik/dynamic \
       -e DOCKER_API_VERSION=1.40 \
       traefik:v2.10 \
@@ -306,11 +314,7 @@ if ! sudo docker ps -a --format '{{.Names}}' | grep -qx "${VPSHUB_TRAEFIK_CONTAI
       --providers.file.directory=/etc/traefik/dynamic \
       --providers.file.watch=true \
       --entrypoints.web.address=:80 \
-      --entrypoints.websecure.address=:443 \
-      --certificatesresolvers.letsencrypt.acme.httpchallenge=true \
-      --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web \
-      --certificatesresolvers.letsencrypt.acme.email=admin@vpshub.link \
-      --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json >/dev/null
+      --entrypoints.web.forwardedHeaders.trustedIPs=127.0.0.1
 else
     echo "Traefik already running"
 fi
@@ -347,7 +351,7 @@ if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     echo ""
     echo "============================================="
     echo " Bootstrap completed successfully! ✓"
-    echo " Traefik listening on 127.0.0.1:${traefikHttpPort} and 127.0.0.1:${traefikHttpsPort}"
+    echo " Traefik listening on 127.0.0.1:${traefikHttpPort}"
     echo " CPU: $CPU_CORES cores"
     echo " Memory: $MEMORY_MB MB"
     echo "============================================="

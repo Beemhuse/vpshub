@@ -36,6 +36,27 @@ export class CreateProjectDto {
   serverId: string;
 
   @ApiProperty({
+    example: { NODE_ENV: 'production', PORT: '3000' },
+    required: false,
+  })
+  @IsOptional()
+  env?: Record<string, string>;
+
+  @ApiProperty({ example: 'app.example.com', required: false })
+  @IsOptional()
+  @IsString()
+  domain?: string;
+
+  @ApiProperty({ example: 'src', required: false })
+  @IsOptional()
+  @IsString()
+  rootDir?: string;
+
+  @ApiProperty({ example: 3000, required: false })
+  @IsOptional()
+  exposedPort?: number;
+
+  @ApiProperty({
     example: { frontend: 'app.example.com', admin_server: 'api.example.com' },
     required: false,
   })

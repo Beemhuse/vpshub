@@ -79,7 +79,7 @@ export class DeploymentsController {
   @Patch(':id/docker-config')
   @ApiOperation({ summary: 'Reconfigure a running Docker deployment' })
   updateDockerConfig(@Req() req, @Param('id') id: string, @Body() updateDto: any) {
-    return this.deploymentsService.reconfigureDockerDeployment(
+    return this.deploymentsService.reconfigureDeployment(
       req.user.id,
       id,
       updateDto,
